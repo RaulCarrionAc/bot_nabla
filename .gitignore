@@ -1,0 +1,22 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# variables de entorno
+.env
+.env.prod
+
+*.http
+
+# datos generados (no aplica si no usas volumenes locales, pero por si acaso)
+data/
+
+# sistema
+.DS_Store

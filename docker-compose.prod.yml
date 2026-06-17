@@ -1,0 +1,70 @@
+services:
+  openwa-api:
+    image: ghcr.io/rmyndharis/openwa:v0.1.6
+    container_name: openwa-api
+    mem_limit: 700m
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=2785
+      - HOME=/tmp
+      - DATABASE_TYPE=sqlite
+      - DATABASE_NAME=/app/data/openwa.sqlite
+      - DATABASE_SYNCHRONIZE=true
+      - ENGINE_TYPE=whatsapp-web.js
+      - SESSION_DATA_PATH=/app/data/sessions
+      - PUPPETEER_HEADLESS=true
+      - PUPPETEER_ARGS=--no-sandbox,--disable-setuid-sandbox,--disable-dev-shm-usage,--disable-gpu,--single-process,--no-zygote
+      - STORAGE_TYPE=local
+      - STORAGE_LOCAL_PATH=/app/data/media
+      - API_MASTER_KEY=${API_MASTER_KEY}
+    volumes:
+      - openwa-data:/app/data
+    shm_size: '256mb'
+    healthcheck:
+      test: ['CMD', 'node', '-e', "require('http').get('http://localhost:2785/api/health/ready', (r) => process.exit(r.statusCode === 200 ? 0 : 1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - nabla-network
+    # SIN puertos expuestos al host — solo accesible dentro de la red Docker
+
+  nabla-webhook:
+    build:
+      context: .
+      dockerfile: Dockerfile.webhook
+    container_name: nabla-webhook
+    mem_limit: 128m
+    restart: unless-stopped
+    env_file:
+      - .env.prod
+    networks:
+      - nabla-network
+    # Tampoco expone puertos al host
+
+  nabla-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot_prod
+    container_name: nabla-bot
+    mem_limit: 64m
+    restart: unless-stopped
+    env_file:
+      - .env.prod
+    depends_on:
+      openwa-api:
+        condition: service_healthy
+      nabla-webhook:
+        condition: service_started
+    networks:
+      - nabla-network
+
+volumes:
+  openwa-data:
+    driver: local
+
+networks:
+  nabla-network:
+    name: nabla-network

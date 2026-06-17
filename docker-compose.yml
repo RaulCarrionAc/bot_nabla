@@ -1,0 +1,18 @@
+services:
+  nabla-webhook:
+    build:
+      context: .
+      dockerfile: Dockerfile.webhook
+    container_name: nabla-webhook
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    restart: unless-stopped
+    networks:
+      openwa-network:
+        ipv4_address: 172.18.0.10  # IP fija
+
+networks:
+  openwa-network:
+    external: true
