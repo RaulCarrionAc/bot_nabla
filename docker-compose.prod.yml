@@ -4,6 +4,8 @@ services:
     container_name: openwa-api
     mem_limit: 700m
     restart: unless-stopped
+    env_file:
+      - .env.prod
     environment:
       - NODE_ENV=production
       - PORT=2785
@@ -29,7 +31,6 @@ services:
       start_period: 60s
     networks:
       - nabla-network
-    # SIN puertos expuestos al host — solo accesible dentro de la red Docker
 
   nabla-webhook:
     build:
@@ -41,9 +42,9 @@ services:
     env_file:
       - .env.prod
     networks:
-      - nabla-network
-    # Tampoco expone puertos al host
-
+      nabla-network:
+        aliases:
+          - webhook.nabla.net
   nabla-bot:
     build:
       context: .
@@ -53,6 +54,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env.prod
+    environment:
+      - PYTHONUNBUFFERED=1
     depends_on:
       openwa-api:
         condition: service_healthy

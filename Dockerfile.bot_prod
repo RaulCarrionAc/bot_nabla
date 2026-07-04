@@ -1,8 +1,17 @@
 # Dockerfile.bot — para main.py en produccion
-FROM python:3.12-alpine
+# Cambiamos de alpine a slim (basado en Debian)
+FROM python:3.12-slim
+
 WORKDIR /app
-RUN apk add --no-cache zbar
+
+# Instalamos libzbar0 de forma compatible con Debian
+RUN apt-get update && apt-get install -y \
+    libzbar0 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
 COPY src/ .
+
 CMD ["python", "main.py"]
