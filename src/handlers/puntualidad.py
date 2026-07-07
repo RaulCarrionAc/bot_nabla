@@ -6,7 +6,26 @@ def procesar_puntualidad(bytes_operacion: bytes, bytes_a5: bytes, nombre: str) -
     """Procesa los archivos y retorna (excel_bytes, resumen_texto)."""
     BD1 = pd.read_excel(io.BytesIO(bytes_operacion))  # Operacion
     BD2 = pd.read_excel(io.BytesIO(bytes_a5))         # Anexo5
+    return _calcular_puntualidad(BD1, BD2)
 
+def procesar_puntualidad_desde_db(db_path: str) -> tuple[bytes, str]:
+    """Carga los datos desde SQLite y ejecuta el análisis."""
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    try:
+        BD1 = pd.read_sql_query("SELECT * FROM operaciones", conn)
+        BD2 = pd.read_sql_query("SELECT * FROM anexo_5", conn)
+    finally:
+        conn.close()
+        
+    if BD1.empty:
+        raise ValueError("La tabla 'operaciones' en SQLite está vacía.")
+    if BD2.empty:
+        raise ValueError("La tabla 'anexo_5' en SQLite está vacía.")
+        
+    return _calcular_puntualidad(BD1, BD2)
+
+def _calcular_puntualidad(BD1: pd.DataFrame, BD2: pd.DataFrame) -> tuple[bytes, str]:
     Bd_inicial_EX = BD1[["Fecha","Variante","Estado","Dirección","Tipo de Día","Período","01","Con Despacho Asociado"]]
     Bd_inicial_EX = Bd_inicial_EX.rename(columns={"Variante":"Servicio","Dirección":"Sentido"})
     Bd_inicial_A5 = BD2[["Servicio","Sentido","Anterior","Hora programada","Posterior","Tipo de Día"]]

@@ -20,3 +20,8 @@ data/
 
 # sistema
 .DS_Store
+
+# pruebas temporales
+scratch/
+DOCKER_GUIDE.md
+log_actualizacion.txt

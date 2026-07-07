@@ -16,7 +16,8 @@ def obtener_o_crear_sesion() -> str | None:
         if isinstance(sesiones, list):
             for s in sesiones:
                 if s.get("name") == SESSION_NAME: return s.get("id")
-        return crear_sesion(URL, HEADERS).get("id") if isinstance(crear_sesion(URL, HEADERS), dict) else None
+        nueva_sesion = crear_sesion(URL, HEADERS)
+        return nueva_sesion.get("id") if isinstance(nueva_sesion, dict) else None
     except: return None
 
 def main():
@@ -34,12 +35,17 @@ def main():
             print("✅ ¡Sesión lista!")
             asegurar_webhook(URL, HEADERS, sesion_id)
             break
-        elif estado == "disconnected":
+        elif estado in ("disconnected", "created"):
+            print("⏳ Iniciando la sesión...")
             iniciar_sesion(URL, HEADERS, sesion_id)
             time.sleep(10)
         elif estado == "initializing":
             print("⏳ La API está cargando el navegador... esperando 20 segundos.")
             time.sleep(20)
+        elif estado == "qr_ready":
+            print("📷 Escanea el siguiente código QR para conectar WhatsApp:")
+            generar_qr(URL, HEADERS, sesion_id)
+            time.sleep(10)
         else:
             time.sleep(10)
 
