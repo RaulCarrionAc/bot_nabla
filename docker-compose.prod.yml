@@ -20,6 +20,7 @@ services:
       - STORAGE_TYPE=local
       - STORAGE_LOCAL_PATH=/app/data/media
       - API_MASTER_KEY=${API_MASTER_KEY}
+      - RESOLVE_LID_TO_PHONE=true
     volumes:
       - ./data/openwa:/app/data
     shm_size: '256mb'

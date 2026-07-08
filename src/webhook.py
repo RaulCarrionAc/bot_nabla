@@ -14,11 +14,32 @@ from datetime import datetime
 
 load_dotenv()
 
-ADMIN_CELLPHONE = str(os.getenv("ADMIN_CELLPHONE", "56989158197")).strip()
+ADMIN_CELLPHONES = [num.strip() for num in os.getenv("ADMIN_CELLPHONE", "56989158197").split(",") if num.strip()]
 
-def obtener_remitente_limpio(data: dict) -> str:
-    """Extrae el número de celular limpio del remitente."""
+def obtener_remitente_limpio(data: dict, session_id: str = None) -> str:
+    """Extrae y resuelve el número de celular limpio del remitente (soportando LID)."""
     sender_id = data.get("author") or data.get("sender", {}).get("id") or data.get("from") or ""
+    
+    # 1. Si ya viene resuelto en el payload
+    if data.get("senderPhone"):
+        raw_phone = str(data.get("senderPhone")).split('@')[0]
+        return "".join(filter(str.isdigit, raw_phone))
+        
+    # 2. Si es un LID y tenemos la sesión, intentar resolver a JID/Teléfono
+    if str(sender_id).endswith("@lid") and session_id:
+        try:
+            r = http_requests.get(
+                f"{OPENWA_URL}/api/sessions/{session_id}/contacts/{sender_id}/phone",
+                headers={"x-api-key": OPENWA_KEY}
+            )
+            if r.status_code in (200, 201):
+                phone = r.json().get("phone")
+                if phone:
+                    return "".join(filter(str.isdigit, str(phone).split('@')[0]))
+        except Exception as e:
+            print(f"⚠️ Error al resolver LID {sender_id} a teléfono: {e}", flush=True)
+            
+    # 3. Fallback
     raw_num = str(sender_id).split('@')[0]
     return "".join(filter(str.isdigit, raw_num))
 
@@ -107,9 +128,9 @@ async def recibir_evento(request: Request, background_tasks: BackgroundTasks):
         return {"status": "ok"}
 
     # Extraer y limpiar número de teléfono del remitente
-    sender_clean = obtener_remitente_limpio(data)
-    admin_clean = "".join(filter(str.isdigit, ADMIN_CELLPHONE))
-    es_admin = (sender_clean == admin_clean)
+    sender_clean = obtener_remitente_limpio(data, session_id)
+    admins_clean = ["".join(filter(str.isdigit, admin)) for admin in ADMIN_CELLPHONES]
+    es_admin = (sender_clean in admins_clean)
     es_permitido = es_admin or es_usuario_permitido(sender_clean)
 
     # Validar si el mensaje es un comando del bot
@@ -169,7 +190,10 @@ async def recibir_evento(request: Request, background_tasks: BackgroundTasks):
         else:
             autorizados = listar_usuarios_permitidos()
             msg = "👥 *Usuarios Autorizados en el Bot*:\n\n"
-            msg += f"👑 *Administrador*:\n- {ADMIN_CELLPHONE}\n\n"
+            msg += "👑 *Administrador(es)*:\n"
+            for admin in ADMIN_CELLPHONES:
+                msg += f"- {admin}\n"
+            msg += "\n"
             msg += "👤 *Celulares Permitidos*:\n"
             if autorizados:
                 for cel in autorizados:
