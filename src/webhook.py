@@ -292,6 +292,26 @@ async def recibir_evento(request: Request, background_tasks: BackgroundTasks):
                 enviar_mensaje(session_id, chat_id, "❌ Indica un número válido. Ejemplo: `!permisos quitar 56912345678`.")
             else:
                 exito = quitar_usuario_permitido(target)
+                
+                # Intentar resolver y quitar JID/LID asociado
+                resolved_id = None
+                try:
+                    r = http_requests.get(
+                        f"{OPENWA_URL}/api/sessions/{session_id}/contacts/check/{target}",
+                        headers={"x-api-key": OPENWA_KEY}
+                    )
+                    if r.status_code in (200, 201):
+                        jid = r.json().get("data")
+                        if jid and isinstance(jid, str):
+                            clean_jid = "".join(filter(str.isdigit, jid.split('@')[0]))
+                            if clean_jid and clean_jid != target:
+                                resolved_id = clean_jid
+                except Exception as e:
+                    print(f"⚠️ Error al verificar número {target} en OpenWA para quitar: {e}", flush=True)
+                
+                if resolved_id:
+                    quitar_usuario_permitido(resolved_id)
+                
                 if exito:
                     enviar_mensaje(session_id, chat_id, f"✅ El número *{target}* fue eliminado de la lista de autorizados.")
                 else:
@@ -305,10 +325,34 @@ async def recibir_evento(request: Request, background_tasks: BackgroundTasks):
                 enviar_mensaje(session_id, chat_id, "❌ Indica un número válido. Ejemplo: `!permisos 56912345678`.")
             else:
                 exito = agregar_usuario_permitido(target)
+                
+                # Intentar consultar en OpenWA si tiene un JID/LID asociado
+                resolved_id = None
+                try:
+                    r = http_requests.get(
+                        f"{OPENWA_URL}/api/sessions/{session_id}/contacts/check/{target}",
+                        headers={"x-api-key": OPENWA_KEY}
+                    )
+                    if r.status_code in (200, 201):
+                        res_data = r.json()
+                        jid = res_data.get("data")
+                        if jid and isinstance(jid, str):
+                            clean_jid = "".join(filter(str.isdigit, jid.split('@')[0]))
+                            if clean_jid and clean_jid != target:
+                                resolved_id = clean_jid
+                except Exception as e:
+                    print(f"⚠️ Error al verificar número {target} en OpenWA: {e}", flush=True)
+                
+                # Si se obtuvo un ID diferente (ej. un LID), agregarlo también
+                msg_add = ""
+                if resolved_id:
+                    agregar_usuario_permitido(resolved_id)
+                    msg_add = f" (ID de privacidad asociado: *{resolved_id}*)"
+                
                 if exito:
-                    enviar_mensaje(session_id, chat_id, f"✅ El número *{target}* ahora está autorizado para usar el bot.")
+                    enviar_mensaje(session_id, chat_id, f"✅ El número *{target}* ahora está autorizado para usar el bot.{msg_add}")
                 else:
-                    enviar_mensaje(session_id, chat_id, f"⚠️ El número *{target}* ya se encuentra autorizado.")
+                    enviar_mensaje(session_id, chat_id, f"⚠️ El número *{target}* ya se encuentra autorizado.{msg_add}")
             return {"status": "ok"}
             
         # !permisos (listar)
