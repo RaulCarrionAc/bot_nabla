@@ -27,17 +27,36 @@ def obtener_remitente_limpio(data: dict, session_id: str = None) -> str:
         
     # 2. Si es un LID y tenemos la sesión, intentar resolver a JID/Teléfono
     if str(sender_id).endswith("@lid") and session_id:
+        # Método A: Consultar los detalles del contacto directamente
+        try:
+            r = http_requests.get(
+                f"{OPENWA_URL}/api/sessions/{session_id}/contacts/{sender_id}",
+                headers={"x-api-key": OPENWA_KEY}
+            )
+            if r.status_code in (200, 201):
+                c_data = r.json()
+                contact_obj = c_data.get("data") if isinstance(c_data, dict) and "data" in c_data else c_data
+                if isinstance(contact_obj, dict):
+                    # 'number' es el número telefónico real devuelto en whatsapp-web.js
+                    phone = contact_obj.get("number") or contact_obj.get("phone")
+                    if phone:
+                        return "".join(filter(str.isdigit, str(phone).split('@')[0]))
+        except Exception as e:
+            print(f"⚠️ Error al resolver LID {sender_id} mediante /contacts: {e}", flush=True)
+
+        # Método B: Fallback a /phone
         try:
             r = http_requests.get(
                 f"{OPENWA_URL}/api/sessions/{session_id}/contacts/{sender_id}/phone",
                 headers={"x-api-key": OPENWA_KEY}
             )
             if r.status_code in (200, 201):
-                phone = r.json().get("phone")
+                c_data = r.json()
+                phone = c_data.get("phone") if isinstance(c_data, dict) else None
                 if phone:
                     return "".join(filter(str.isdigit, str(phone).split('@')[0]))
         except Exception as e:
-            print(f"⚠️ Error al resolver LID {sender_id} a teléfono: {e}", flush=True)
+            print(f"⚠️ Error al resolver LID {sender_id} mediante /phone: {e}", flush=True)
             
     # 3. Fallback
     raw_num = str(sender_id).split('@')[0]
