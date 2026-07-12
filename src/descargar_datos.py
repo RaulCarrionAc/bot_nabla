@@ -133,42 +133,45 @@ def obtener_datos_playwright(config, fecha_inicio, fecha_fin):
 
     ruta_temporal = Path(f"_tmp_descarga_tasacop.xlsx")
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
 
-        page.goto(f"{base_url}/SaefWeb/index.zul")
-        page.fill("input[name='username']", usuario)
-        page.fill("input[name='password']", password)
-        page.click("#loginBtn")
-        page.wait_for_load_state("networkidle")
+            page.goto(f"{base_url}/SaefWeb/index.zul")
+            page.fill("input[name='username']", usuario)
+            page.fill("input[name='password']", password)
+            page.click("#loginBtn")
+            page.wait_for_load_state("networkidle")
 
-        page.goto(f"{base_url}/SaefWeb/component/indicador/expeditions.zul")
-        page.wait_for_load_state("networkidle")
+            page.goto(f"{base_url}/SaefWeb/component/indicador/expeditions.zul")
+            page.wait_for_load_state("networkidle")
 
-        set_datepicker_value(page, "#myPicker", fecha_inicio)
-        page.wait_for_timeout(500)
-        set_datepicker_value(page, "#myPickerTo", fecha_fin)
-        page.wait_for_timeout(500)
+            set_datepicker_value(page, "#myPicker", fecha_inicio)
+            page.wait_for_timeout(500)
+            set_datepicker_value(page, "#myPickerTo", fecha_fin)
+            page.wait_for_timeout(500)
 
-        page.click("#btnAccept")
-        page.wait_for_load_state("networkidle")
-        page.wait_for_timeout(1000)
+            page.click("#btnAccept")
+            page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(1000)
 
-        with page.expect_download(timeout=30000) as download_info:
-            page.click("#btnExport")
-        download = download_info.value
-        download.save_as(ruta_temporal)
+            with page.expect_download(timeout=30000) as download_info:
+                page.click("#btnExport")
+            download = download_info.value
+            download.save_as(ruta_temporal)
 
-        browser.close()
+            browser.close()
 
-    df = pd.read_excel(ruta_temporal)
-    df.columns = [str(c).strip() for c in df.columns]
-    
-    if ruta_temporal.exists():
-        ruta_temporal.unlink()
-        
-    return df
+        df = pd.read_excel(ruta_temporal)
+        df.columns = [str(c).strip() for c in df.columns]
+        return df
+    finally:
+        if ruta_temporal.exists():
+            try:
+                ruta_temporal.unlink()
+            except Exception as e:
+                print(f"⚠️ No se pudo eliminar el archivo temporal: {e}", flush=True)
 
 # --- INTEGRACIÓN CON LA BASE DE DATOS SQLITE ---
 
@@ -288,17 +291,26 @@ def guardar_expediciones_en_db(df: pd.DataFrame, operador: str, fecha_inicio: st
                 session.commit()
         print(f"✅ Se importaron {total_records} nuevas expediciones de '{operador}' en SQLite.")
         logging.info(f"[{operador}] OK - Insertados: {total_records}")
+        return total_records
     else:
         print(f"⚠️ No se encontraron expediciones para guardar para '{operador}'.")
         logging.info(f"[{operador}] Sin registros nuevos.")
+        return 0
 
 # --- ORQUESTADOR ---
 
-def procesar_empresa(nombre, config):
+def procesar_empresa(nombre, config) -> int:
     try:
         hoy = datetime.now()
-        fecha_fin = hoy.strftime("%d-%m-%Y")
-        fecha_inicio = (hoy - timedelta(days=DIAS_RECONCILIACION)).strftime("%d-%m-%Y")
+        if nombre == "tasacop":
+            # 1 día de desfase: descargar solo el día anterior (fecha_inicio = fecha_fin = ayer)
+            ayer = hoy - timedelta(days=1)
+            fecha_inicio = ayer.strftime("%d-%m-%Y")
+            fecha_fin = ayer.strftime("%d-%m-%Y")
+        else:
+            # Transidea: 5 días de reconciliación
+            fecha_inicio = (hoy - timedelta(days=5)).strftime("%d-%m-%Y")
+            fecha_fin = hoy.strftime("%d-%m-%Y")
 
         print(f"\n🔄 Iniciando descarga para '{nombre}' ({fecha_inicio} al {fecha_fin})...")
         if config["metodo"] == "requests":
@@ -310,21 +322,39 @@ def procesar_empresa(nombre, config):
 
         print(f"📥 Descargados {len(df_nuevo)} registros para '{nombre}'.")
         
-        # Guardar en SQLite
-        guardar_expediciones_en_db(df_nuevo, nombre, fecha_inicio, fecha_fin)
+        # Guardar en SQLite y retornar cantidad
+        total = guardar_expediciones_en_db(df_nuevo, nombre, fecha_inicio, fecha_fin)
+        return total
 
     except Exception as e:
         logging.error(f"[{nombre}] FALLÓ: {e}")
         print(f"❌ [{nombre}] Error: {e}")
+        raise e
 
 
-def descargar_todos():
+def descargar_todos() -> dict:
     from database import init_db
-    # Asegurar que las tablas existen
     init_db()
+    
+    resumen = {}
+    errores = []
+    
     for nombre, config in EMPRESAS.items():
-        procesar_empresa(nombre, config)
+        try:
+            total_insertado = procesar_empresa(nombre, config)
+            resumen[nombre] = total_insertado
+        except Exception as e:
+            resumen[nombre] = 0
+            errores.append(f"{nombre}: {str(e)}")
+            
+    return {
+        "success": len(errores) == 0,
+        "resumen": resumen,
+        "errores": errores
+    }
 
 
 if __name__ == "__main__":
-    descargar_todos()
+    resultado = descargar_todos()
+    print("\n🏁 Proceso de descarga finalizado:", resultado)
+

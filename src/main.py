@@ -35,7 +35,7 @@ def main():
             print("✅ ¡Sesión lista!")
             asegurar_webhook(URL, HEADERS, sesion_id)
             break
-        elif estado in ("disconnected", "created"):
+        elif estado in ("disconnected", "created", "failed"):
             print("⏳ Iniciando la sesión...")
             iniciar_sesion(URL, HEADERS, sesion_id)
             time.sleep(10)

@@ -50,28 +50,117 @@ def health_check():
     return {"status": "ok"}
 
 
+OPENWA_URL = os.getenv("URL", "http://openwa-api:2785")
+OPENWA_KEY = os.getenv("API-KEY")
+
+def obtener_session_id_activo() -> str | None:
+    """Consulta a la API de OpenWA para obtener el ID de la sesión 'nabla-bot' activa."""
+    try:
+        r = http_requests.get(
+            f"{OPENWA_URL}/api/sessions",
+            headers={"x-api-key": OPENWA_KEY}
+        )
+        if r.status_code in (200, 201):
+            sesiones = r.json()
+            if isinstance(sesiones, list):
+                for s in sesiones:
+                    if s.get("name") == "nabla-bot" and s.get("status") == "ready":
+                        return s.get("id")
+    except Exception as e:
+        print(f"⚠️ Error al obtener session_id activo: {e}", flush=True)
+    return None
+
+
 def tarea_actualizar_datos(session_id: str, chat_id: str):
     from descargar_datos import descargar_todos
     try:
-        descargar_todos()
-        enviar_mensaje(
-            session_id, 
-            chat_id, 
-            "✅ *Actualización exitosa*. Se descargaron e insertaron en la base de datos las expediciones de los últimos 7 días para todos los operadores."
-        )
+        res = descargar_todos()
+        
+        # Crear un resumen legible
+        detalles = ""
+        for op, cant in res.get("resumen", {}).items():
+            detalles += f"- *{op.upper()}*: {cant} registros nuevos\n"
+            
+        if res.get("success"):
+            msg = f"✅ *Descarga e Importación Diaria Completada*\n\n{detalles}"
+        else:
+            msg = f"⚠️ *Descarga Finalizada con Errores*\n\n{detalles}\n❌ *Errores detectados*:\n"
+            for err in res.get("errores", []):
+                msg += f"- {err}\n"
+                
+        enviar_mensaje(session_id, chat_id, msg)
     except Exception as e:
         enviar_mensaje(
             session_id, 
             chat_id, 
-            f"❌ *Error durante la actualización*: {e}"
+            f"❌ *Error crítico durante la actualización de datos*: {e}"
         )
+
+
+async def planificador_descargas():
+    """Planifica y ejecuta la descarga diaria de datos a las 06:30 AM hora de Chile."""
+    import asyncio
+    from zoneinfo import ZoneInfo
+    from datetime import datetime, timedelta
+    
+    chile_tz = ZoneInfo("America/Santiago")
+    
+    # Esperar a que la base de datos y la API estén estables al arrancar
+    await asyncio.sleep(30)
+    
+    while True:
+        try:
+            ahora = datetime.now(chile_tz)
+            proxima = ahora.replace(hour=6, minute=30, second=0, microsecond=0)
+            if ahora >= proxima:
+                proxima += timedelta(days=1)
+                
+            segundos_espera = (proxima - ahora).total_seconds()
+            print(f"⏰ Planificador: Próxima descarga programada para {proxima} Chile. Esperando {segundos_espera:.1f} seg.", flush=True)
+            
+            await asyncio.sleep(segundos_espera)
+            
+            # Ejecutar la descarga automática
+            print("⏰ Planificador: Iniciando descarga automática diaria de las 06:30 AM...", flush=True)
+            
+            # Obtener la sesión activa para notificar a los administradores
+            session_id = obtener_session_id_activo()
+            
+            from descargar_datos import descargar_todos
+            res = descargar_todos()
+            
+            if session_id:
+                # Crear mensaje de reporte
+                detalles = ""
+                for op, cant in res.get("resumen", {}).items():
+                    detalles += f"- *{op.upper()}*: {cant} registros nuevos\n"
+                    
+                if res.get("success"):
+                    msg = f"⏰ *Planificador Automático (06:30 AM)*\n\n✅ *Actualización exitosa*\n\n{detalles}"
+                else:
+                    msg = f"⏰ *Planificador Automático (06:30 AM)*\n\n⚠️ *Actualización con Errores*\n\n{detalles}\n❌ *Errores detectados*:\n"
+                    for err in res.get("errores", []):
+                        msg += f"- {err}\n"
+                        
+                for admin in ADMIN_CELLPHONES:
+                    chat_id = f"{admin}@c.us"
+                    enviar_mensaje(session_id, chat_id, msg)
+            else:
+                print("⚠️ Planificador: No se pudo enviar el reporte por WhatsApp porque no se encontró ninguna sesión activa 'nabla-bot'.", flush=True)
+                
+        except Exception as e:
+            print(f"❌ Error en el planificador de descargas: {e}", flush=True)
+            # En caso de error, esperar 5 minutos antes de reintentar el cálculo
+            await asyncio.sleep(300)
+
 
 @app.on_event("startup")
 def on_startup():
     init_db()
+    import asyncio
+    asyncio.create_task(planificador_descargas())
 
-OPENWA_URL = os.getenv("URL", "http://openwa-api:2785")
-OPENWA_KEY = os.getenv("API-KEY")
+
 
 
 def enviar_mensaje(session_id: str, chat_id: str, texto: str) -> bool:

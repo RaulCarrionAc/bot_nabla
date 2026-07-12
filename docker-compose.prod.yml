@@ -13,7 +13,7 @@ services:
       - DATABASE_TYPE=sqlite
       - DATABASE_NAME=/app/data/openwa.sqlite
       - DATABASE_SYNCHRONIZE=true
-      - ENGINE_TYPE=whatsapp-web.js
+      - ENGINE_TYPE=${ENGINE_TYPE:-whatsapp-web.js}
       - SESSION_DATA_PATH=/app/data/sessions
       - PUPPETEER_HEADLESS=true
       - PUPPETEER_ARGS=--no-sandbox,--disable-setuid-sandbox,--disable-dev-shm-usage,--disable-gpu,--single-process,--no-zygote
@@ -38,7 +38,7 @@ services:
       context: .
       dockerfile: Dockerfile.webhook
     container_name: nabla-webhook
-    mem_limit: 128m
+    mem_limit: 512m
     restart: unless-stopped
     env_file:
       - .env.prod
