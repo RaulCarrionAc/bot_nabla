@@ -115,10 +115,19 @@ def tarea_calcular_icf(session_id: str, chat_id: str, operador: str, anio: int, 
         db_path = DATABASE_URL.replace("sqlite:///", "")
         reporte_bytes, proy_bytes, resumen_txt = ejecutar_calculo_icf(operador, anio, mes, db_path)
         
+        # Determinar si es mes pasado o vigente (mes actual o futuro)
+        hoy = datetime.now()
+        es_mes_pasado = (anio < hoy.year) or (anio == hoy.year and mes < hoy.month)
+        
         enviar_mensaje(session_id, chat_id, resumen_txt)
-        enviar_documento(session_id, chat_id, reporte_bytes, f"reporte_{operador}_{mes:02d}_{anio}.xlsx")
-        enviar_documento(session_id, chat_id, proy_bytes, f"reporte_proyeccion_{operador}_{mes:02d}_{anio}.xlsx")
-        print("✅ [DEBUG] Reportes ICF enviados con éxito", flush=True)
+        
+        if es_mes_pasado:
+            enviar_documento(session_id, chat_id, reporte_bytes, f"reporte_{operador}_{mes:02d}_{anio}.xlsx")
+            print("✅ [DEBUG] Reporte ICF de mes pasado enviado con éxito", flush=True)
+        else:
+            enviar_documento(session_id, chat_id, proy_bytes, f"reporte_proyeccion_{operador}_{mes:02d}_{anio}.xlsx")
+            print("✅ [DEBUG] Reporte Simulación ICF de mes vigente enviado con éxito", flush=True)
+            
     except Exception as e:
         print(f"❌ [DEBUG] Error calculando ICF: {e}", flush=True)
         enviar_mensaje(session_id, chat_id, f"❌ Error calculando ICF: Asegúrate de que las frecuencias y expediciones estén cargadas para la fecha indicada.")
