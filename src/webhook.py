@@ -97,6 +97,33 @@ def tarea_actualizar_datos(session_id: str, chat_id: str):
         )
 
 
+def tarea_calcular_puntualidad(session_id: str, chat_id: str):
+    try:
+        db_path = DATABASE_URL.replace("sqlite:///", "")
+        excel_bytes, resumen = procesar_puntualidad_desde_db(db_path)
+        
+        enviar_mensaje(session_id, chat_id, resumen)
+        enviar_documento(session_id, chat_id, excel_bytes, "puntualidad_reporte.xlsx")
+        print("✅ [DEBUG] Proceso completo desde base de datos", flush=True)
+    except Exception as e:
+        print(f"❌ [DEBUG] Error procesando desde base de datos: {e}", flush=True)
+        enviar_mensaje(session_id, chat_id, "❌ Error al procesar los datos. Por favor verifica que las tablas 'operaciones' y 'anexo_5' en SQLite contengan registros válidos.")
+
+
+def tarea_calcular_icf(session_id: str, chat_id: str, operador: str, anio: int, mes: int):
+    try:
+        db_path = DATABASE_URL.replace("sqlite:///", "")
+        reporte_bytes, proy_bytes, resumen_txt = ejecutar_calculo_icf(operador, anio, mes, db_path)
+        
+        enviar_mensaje(session_id, chat_id, resumen_txt)
+        enviar_documento(session_id, chat_id, reporte_bytes, f"reporte_{operador}_{mes:02d}_{anio}.xlsx")
+        enviar_documento(session_id, chat_id, proy_bytes, f"reporte_proyeccion_{operador}_{mes:02d}_{anio}.xlsx")
+        print("✅ [DEBUG] Reportes ICF enviados con éxito", flush=True)
+    except Exception as e:
+        print(f"❌ [DEBUG] Error calculando ICF: {e}", flush=True)
+        enviar_mensaje(session_id, chat_id, f"❌ Error calculando ICF: Asegúrate de que las frecuencias y expediciones estén cargadas para la fecha indicada.")
+
+
 async def planificador_descargas():
     """Planifica y ejecuta la descarga diaria de datos a las 06:30 AM hora de Chile."""
     import asyncio
@@ -304,18 +331,7 @@ async def recibir_evento(request: Request, background_tasks: BackgroundTasks):
     if "!puntualidad" in cuerpo:
         print("✅ ¡Comando detectado!", flush=True)
         enviar_mensaje(session_id, chat_id, "⏳ Procesando reporte de puntualidad desde la base de datos SQLite...")
-        
-        try:
-            db_path = DATABASE_URL.replace("sqlite:///", "")
-            excel_bytes, resumen = procesar_puntualidad_desde_db(db_path)
-            
-            enviar_mensaje(session_id, chat_id, resumen)
-            enviar_documento(session_id, chat_id, excel_bytes, "puntualidad_reporte.xlsx")
-            print("✅ [DEBUG] Proceso completo desde base de datos", flush=True)
-        except Exception as e:
-            print(f"❌ [DEBUG] Error procesando desde base de datos: {e}", flush=True)
-            enviar_mensaje(session_id, chat_id, "❌ Error al procesar los datos. Por favor verifica que las tablas 'operaciones' y 'anexo_5' en SQLite contengan registros válidos.")
-        
+        background_tasks.add_task(tarea_calcular_puntualidad, session_id, chat_id)
         return {"status": "ok"}
 
     # Comando !icf
@@ -357,19 +373,7 @@ async def recibir_evento(request: Request, background_tasks: BackgroundTasks):
             
         print(f"✅ Comando !icf detectado: operador={operador}, mes={mes}, anio={anio}", flush=True)
         enviar_mensaje(session_id, chat_id, f"⏳ Calculando reporte ICF para *{operador.upper()}* ({mes:02d}/{anio}). Espera un momento...")
-        
-        try:
-            db_path = DATABASE_URL.replace("sqlite:///", "")
-            reporte_bytes, proy_bytes, resumen_txt = ejecutar_calculo_icf(operador, anio, mes, db_path)
-            
-            enviar_mensaje(session_id, chat_id, resumen_txt)
-            enviar_documento(session_id, chat_id, reporte_bytes, f"reporte_{operador}_{mes:02d}_{anio}.xlsx")
-            enviar_documento(session_id, chat_id, proy_bytes, f"reporte_proyeccion_{operador}_{mes:02d}_{anio}.xlsx")
-            print("✅ [DEBUG] Reportes ICF enviados con éxito", flush=True)
-        except Exception as e:
-            print(f"❌ [DEBUG] Error calculando ICF: {e}", flush=True)
-            enviar_mensaje(session_id, chat_id, f"❌ Error calculando ICF: Asegúrate de que las frecuencias y expediciones estén cargadas para la fecha indicada.")
-            
+        background_tasks.add_task(tarea_calcular_icf, session_id, chat_id, operador, anio, mes)
         return {"status": "ok"}
 
     # Ejemplo de uso de persistencia de estado para otros comandos futuros
