@@ -16,7 +16,7 @@ services:
       - ENGINE_TYPE=${ENGINE_TYPE:-whatsapp-web.js}
       - SESSION_DATA_PATH=/app/data/sessions
       - PUPPETEER_HEADLESS=true
-      - PUPPETEER_ARGS=--no-sandbox,--disable-setuid-sandbox,--disable-dev-shm-usage,--disable-gpu,--single-process,--no-zygote
+      - PUPPETEER_ARGS=--no-sandbox,--disable-setuid-sandbox,--disable-dev-shm-usage,--disable-gpu,--single-process,--no-zygote,--ignore-certificate-errors
       - STORAGE_TYPE=local
       - STORAGE_LOCAL_PATH=/app/data/media
       - API_MASTER_KEY=${API_MASTER_KEY}
