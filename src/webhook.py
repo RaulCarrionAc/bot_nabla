@@ -16,6 +16,20 @@ load_dotenv()
 
 ADMIN_CELLPHONES = [num.strip() for num in os.getenv("ADMIN_CELLPHONE", "56989158197").split(",") if num.strip()]
 
+# Lista global para registrar los últimos intentos denegados
+INTENTOS_DENEGADOS = []
+
+def registrar_intento_denegado(sender: str):
+    global INTENTOS_DENEGADOS
+    ahora = datetime.now()
+    # Evitar duplicados recientes
+    INTENTOS_DENEGADOS = [x for x in INTENTOS_DENEGADOS if x["sender"] != sender]
+    INTENTOS_DENEGADOS.append({"sender": sender, "time": ahora})
+    # Mantener solo los últimos 5 intentos
+    if len(INTENTOS_DENEGADOS) > 5:
+        INTENTOS_DENEGADOS.pop(0)
+
+
 def obtener_remitente_limpio(data: dict, session_id: str = None) -> str:
     """Extrae y resuelve el número de celular limpio del remitente (soportando LID)."""
     sender_id = data.get("author") or data.get("sender", {}).get("id") or data.get("from") or ""
@@ -284,6 +298,7 @@ async def recibir_evento(request: Request, background_tasks: BackgroundTasks):
     if es_comando:
         if not es_permitido:
             print(f"❌ Acceso denegado para remitente: {sender_clean}", flush=True)
+            registrar_intento_denegado(sender_clean)
             enviar_mensaje(
                 session_id, 
                 chat_id, 
@@ -388,6 +403,16 @@ async def recibir_evento(request: Request, background_tasks: BackgroundTasks):
                     msg += f"- {cel}\n"
             else:
                 msg += "_(Ninguno además del administrador)_\n"
+                
+            # Mostrar intentos denegados recientes para facilitar copia
+            if INTENTOS_DENEGADOS:
+                msg += "\n🚫 *Intentos denegados recientes*:\n"
+                for intento in reversed(INTENTOS_DENEGADOS):
+                    diff = datetime.now() - intento["time"]
+                    minutos = int(diff.total_seconds() / 60)
+                    hace = f"hace {minutos} min" if minutos > 0 else "hace instantes"
+                    msg += f"- `{intento['sender']}` ({hace}) _-> Para autorizar: `!permisos {intento['sender']}`_\n"
+                    
             msg += "\n💡 _Para agregar: `!permisos <numero>`_\n_Para quitar: `!permisos quitar <numero>`_"
             enviar_mensaje(session_id, chat_id, msg)
             return {"status": "ok"}
