@@ -287,6 +287,12 @@ async def recibir_evento(request: Request, background_tasks: BackgroundTasks):
 
     # Extraer y limpiar número de teléfono del remitente
     sender_clean = obtener_remitente_limpio(data, session_id)
+    
+    # Redirigir JID de destino si logramos resolver el número real del remitente
+    # para evitar enviar mensajes a direcciones LID (@lid) que congelan/crashean a whatsapp-web.js
+    if chat_id.endswith("@lid") and len(sender_clean) < 15:
+        chat_id = f"{sender_clean}@c.us"
+        
     admins_clean = ["".join(filter(str.isdigit, admin)) for admin in ADMIN_CELLPHONES]
     es_admin = (sender_clean in admins_clean)
     es_permitido = es_admin or es_usuario_permitido(sender_clean)
@@ -299,11 +305,8 @@ async def recibir_evento(request: Request, background_tasks: BackgroundTasks):
         if not es_permitido:
             print(f"❌ Acceso denegado para remitente: {sender_clean}", flush=True)
             registrar_intento_denegado(sender_clean)
-            enviar_mensaje(
-                session_id, 
-                chat_id, 
-                "❌ *Acceso Denegado*. Tu número de teléfono no está autorizado para ejecutar comandos en este bot. Contacta al administrador."
-            )
+            # Ignorar silenciosamente sin enviar mensaje de WhatsApp al LID no autorizado.
+            # Esto previene que el motor de whatsapp-web.js se caiga al intentar enviar mensajes a IDs de privacidad.
             return {"status": "ok"}
 
     # Comando !permisos (Solo Administrador)
