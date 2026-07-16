@@ -196,7 +196,7 @@ async def planificador_descargas():
             session_id = obtener_session_id_activo()
             
             from descargar_datos import descargar_todos
-            res = descargar_todos()
+            res = await asyncio.to_thread(descargar_todos)
             
             if session_id:
                 # Crear mensaje de reporte

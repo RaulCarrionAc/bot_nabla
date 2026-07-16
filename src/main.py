@@ -50,7 +50,19 @@ def main():
             time.sleep(10)
 
     print("\n🟢 Bot en línea. Esperando eventos...")
-    while True: time.sleep(60)
+    while True:
+        time.sleep(60)
+        try:
+            estado = verificar_estado(URL, HEADERS, sesion_id)
+            if estado != "ready":
+                print(f"⚠️ El estado de la sesión cambió a '{estado}'. Saliendo para forzar reinicio por Docker...")
+                break
+        except Exception as e:
+            print(f"⚠️ Error de conexión con la API: {e}. Saliendo para forzar reinicio por Docker...")
+            break
+            
+    import sys
+    sys.exit(1)
 
 if __name__ == "__main__":
     main()
