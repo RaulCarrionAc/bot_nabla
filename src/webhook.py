@@ -290,7 +290,7 @@ async def recibir_evento(request: Request, background_tasks: BackgroundTasks):
     
     # Redirigir JID de destino si logramos resolver el número real del remitente
     # para evitar enviar mensajes a direcciones LID (@lid) que congelan/crashean a whatsapp-web.js
-    if chat_id.endswith("@lid") and len(sender_clean) < 15:
+    if chat_id.endswith("@lid") and len(sender_clean) <= 12:
         chat_id = f"{sender_clean}@c.us"
         
     admins_clean = ["".join(filter(str.isdigit, admin)) for admin in ADMIN_CELLPHONES]

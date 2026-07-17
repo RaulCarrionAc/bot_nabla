@@ -21,6 +21,7 @@ services:
       - STORAGE_LOCAL_PATH=/app/data/media
       - API_MASTER_KEY=${API_MASTER_KEY}
       - RESOLVE_LID_TO_PHONE=true
+      - BODY_SIZE_LIMIT=50mb
     volumes:
       - ./data/openwa:/app/data
     shm_size: '256mb'
