@@ -1,6 +1,6 @@
 services:
   openwa-api:
-    image: ghcr.io/rmyndharis/openwa:v0.8.19
+    image: ghcr.io/rmyndharis/openwa:0.8.19
     container_name: openwa-api
     mem_limit: 700m
     restart: unless-stopped
