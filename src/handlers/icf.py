@@ -169,7 +169,39 @@ def crear_df_icf(df_a1: pd.DataFrame, df_conteo: pd.DataFrame) -> pd.DataFrame:
     return df_icf
 
 
-def aplicar_regla_pago(icf: float, psi: float = 0.95) -> float:
+def round_half_up(val, decimals=2):
+    multiplier = 10 ** decimals
+    if isinstance(val, pd.Series):
+        return np.floor(val * multiplier + 0.5) / multiplier
+    else:
+        return float(np.floor(val * multiplier + 0.5) / multiplier)
+
+
+def calcular_psi(df, fecha_columna="Fecha", fecha_inicio_operacion=None, mas_de_24_meses=None):
+    """
+    Calcula el parámetro psi (ψ) según la antigüedad de la operación,
+    de acuerdo a lo indicado en la Res. 49/2024 (pág. 41):
+        - Hasta el mes 24 de operación: psi = 0,90
+        - Desde el mes 25 en adelante:  psi = 0,95
+    """
+    if fecha_inicio_operacion is None and mas_de_24_meses is None:
+        raise ValueError(
+            "Debes especificar 'fecha_inicio_operacion' o 'mas_de_24_meses'."
+        )
+
+    if mas_de_24_meses is not None:
+        return pd.Series(0.95 if mas_de_24_meses else 0.90, index=df.index)
+
+    fecha_inicio_operacion = pd.Timestamp(fecha_inicio_operacion)
+
+    def mes_operacion(fecha):
+        return (fecha.year - fecha_inicio_operacion.year) * 12 + (fecha.month - fecha_inicio_operacion.month) + 1
+
+    meses_operacion = df[fecha_columna].apply(mes_operacion)
+    return np.where(meses_operacion <= 24, 0.90, 0.95)
+
+
+def aplicar_regla_pago(icf: float, psi: float = 0.90) -> float:
     if icf < 0.50:
         return 0.50
     elif icf > psi:
@@ -178,19 +210,21 @@ def aplicar_regla_pago(icf: float, psi: float = 0.95) -> float:
         return icf
 
 
-def construir_resumenes_icf(df_icf: pd.DataFrame, psi_valor: float = 0.95):
+def construir_resumenes_icf(df_icf: pd.DataFrame, psi_valor: float = 0.90):
     """Calcula las métricas agregadas por tipo de demanda y servicio."""
     if df_icf.empty:
         return pd.Series(dtype=float), 0.0, pd.Series(dtype=float), 0.5
         
-    tabla_por_tipo_demanda = df_icf.groupby("tipo_demanda")["ICF"].mean().round(2)
-    icf_general = round(tabla_por_tipo_demanda.mean(), 3)
-    tabla_por_tipo_demanda_servicio = (
-        df_icf.groupby(["tipo_demanda", "servicio"])["ICF"].mean().round(2)
+    tabla_por_tipo_demanda = round_half_up(df_icf.groupby("tipo_demanda")["ICF"].mean(), 2)
+    icf_general = round_half_up(tabla_por_tipo_demanda.mean(), 3)
+    tabla_por_tipo_demanda_servicio = round_half_up(
+        df_icf.groupby(["tipo_demanda", "servicio"])["ICF"].mean(), 2
     )
     
-    icf_promedio_crudo = round(tabla_por_tipo_demanda.mean(), 2)
-    icf_pago = aplicar_regla_pago(icf_promedio_crudo, psi=psi_valor)
+    # Aplicar la regla de pago a nivel de tipo de demanda
+    tabla_por_tipo_demanda_pago = tabla_por_tipo_demanda.apply(lambda val: aplicar_regla_pago(val, psi=psi_valor))
+    # Promedio de los tipos de demanda ajustados, redondeado a 2 decimales
+    icf_pago = round_half_up(tabla_por_tipo_demanda_pago.mean(), 2)
 
     return tabla_por_tipo_demanda, icf_general, tabla_por_tipo_demanda_servicio, icf_pago
 
@@ -225,15 +259,17 @@ def proyectar_simulado_estocastico(
     ultima_fecha,
     seed: int = 42
 ) -> pd.DataFrame:
-    """Proyecta los días faltantes usando simulación estocástica del ratio EO/EE."""
+    """
+    Rellena los días faltantes del mes utilizando un muestreo estocástico con reemplazo
+    del ratio de cumplimiento (EO / EE) obtenido del histórico acumulado y del mes en curso.
+    """
     df_sim = df_icf_completo.copy()
-    missing_mask = df_sim["Fecha"] > pd.to_datetime(ultima_fecha)
+    missing_mask = df_sim["Fecha"] > ultima_fecha
 
-    if not missing_mask.any():
-        return df_sim
-
+    # Pool de datos observados (historial + mes actual hasta la fecha)
     df_pool_actual = df_sim[~missing_mask].copy()
     if df_historico is not None and not df_historico.empty:
+        # Filtrar solo columnas necesarias para evitar problemas de compatibilidad
         columnas_comunes = ["servicio", "sentido", "periodo", "tipo_dia", "tipo_demanda", "EE", "EO"]
         df_hist_filtrado = df_historico[columnas_comunes].copy()
         df_act_filtrado = df_pool_actual[columnas_comunes].copy()
@@ -242,18 +278,23 @@ def proyectar_simulado_estocastico(
         df_pool = df_pool_actual
 
     if df_pool.empty:
+        # Fallback si no hay ningún dato: asumimos cumplimiento perfecto
         df_sim.loc[missing_mask, "EO"] = df_sim.loc[missing_mask, "EE"]
         df_sim.loc[missing_mask, "ICF"] = 1.0
         return df_sim
 
+    # Calcular ratio de cumplimiento observado en el pool
     df_pool["ratio"] = df_pool["EO"] / df_pool["EE"]
     df_pool["ratio"] = df_pool["ratio"].fillna(0.0).clip(lower=0.0)
 
+    # Agrupaciones en cascada para el muestreo
     pool_dict_primary = df_pool.groupby(["servicio", "sentido", "periodo", "tipo_dia"])["ratio"].apply(list).to_dict()
     pool_dict_secondary = df_pool.groupby(["tipo_demanda", "periodo"])["ratio"].apply(list).to_dict()
     pool_dict_tertiary = df_pool.groupby(["periodo"])["ratio"].apply(list).to_dict()
 
+    # Inicializar generador aleatorio para reproducibilidad
     rng = np.random.default_rng(seed)
+
     df_missing = df_sim[missing_mask].copy()
     simulated_ratios = []
 
@@ -271,15 +312,17 @@ def proyectar_simulado_estocastico(
         if ratio_list:
             ratio_val = rng.choice(ratio_list)
         else:
-            ratio_val = 1.0
+            ratio_val = 1.0  # Fallback absoluto
 
         simulated_ratios.append(ratio_val)
 
+    # Asignar expediciones observadas simuladas (sin superar las exigidas y redondeado a entero)
     df_sim.loc[missing_mask, "EO"] = np.minimum(
         df_missing["EE"],
         np.round(df_missing["EE"] * simulated_ratios)
     )
 
+    # Recalcular el ICF para los días proyectados
     df_sim.loc[missing_mask, "ICF"] = np.floor(
         np.minimum(df_sim.loc[missing_mask, "EE"], df_sim.loc[missing_mask, "EO"]) 
         / df_sim.loc[missing_mask, "EE"] * 100 + 0.5
@@ -289,13 +332,16 @@ def proyectar_simulado_estocastico(
 
 
 def proyectar_ideal(df_icf_completo: pd.DataFrame, ultima_fecha) -> pd.DataFrame:
-    """Proyecta los días restantes asumiendo cumplimiento perfecto (ICF = 1.0)."""
+    """
+    Rellena los días faltantes del mes asumiendo un escenario ideal en el cual
+    se cumple exactamente la frecuencia exigida (ICF = 1.0).
+    """
     df_ideal = df_icf_completo.copy()
-    missing_mask = df_ideal["Fecha"] > pd.to_datetime(ultima_fecha)
+    missing_mask = df_ideal["Fecha"] > ultima_fecha
 
-    if missing_mask.any():
-        df_ideal.loc[missing_mask, "EO"] = df_ideal.loc[missing_mask, "EE"]
-        df_ideal.loc[missing_mask, "ICF"] = 1.0
+    # En el escenario ideal, el cumplimiento de los días faltantes es perfecto
+    df_ideal.loc[missing_mask, "EO"] = df_ideal.loc[missing_mask, "EE"]
+    df_ideal.loc[missing_mask, "ICF"] = 1.0
 
     return df_ideal
 
@@ -307,10 +353,12 @@ def crear_tabla_comparativa(
     tabla_demanda_sim: pd.Series, icf_gen_sim: float, icf_pag_sim: float,
     tabla_demanda_ideal: pd.Series, icf_gen_ideal: float, icf_pag_ideal: float
 ) -> pd.DataFrame:
-    """Crea una tabla comparativa side-by-side de los tres escenarios."""
+    """
+    Construye un DataFrame comparativo side-by-side de las métricas clave.
+    """
     filas = []
 
-    # 1. ICF General
+    # 1. Agregar ICF General
     filas.append({
         "Métrica": "ICF General (3 decimales)",
         "Real Observado (a la fecha)": icf_general_obs,
@@ -318,7 +366,7 @@ def crear_tabla_comparativa(
         "Proyección Ideal (Mes Completo)": icf_gen_ideal
     })
 
-    # 2. ICF Pago
+    # 2. Agregar ICF Pago
     filas.append({
         "Métrica": "ICF Pago (Regla de Pago)",
         "Real Observado (a la fecha)": icf_pago_obs,
@@ -326,7 +374,7 @@ def crear_tabla_comparativa(
         "Proyección Ideal (Mes Completo)": icf_pag_ideal
     })
 
-    # 3. Tipos de demanda
+    # 3. Agregar tipos de demanda
     tipos_demanda = sorted(list(
         set(tabla_demanda_obs.index) | 
         set(tabla_demanda_sim.index) | 
@@ -348,6 +396,50 @@ def crear_tabla_comparativa(
     return pd.DataFrame(filas)
 
 
+def escribir_tablas_resumen(ws, df_general: pd.DataFrame, df_tipo_demanda: pd.DataFrame, df_serv_demanda: pd.DataFrame) -> None:
+    """
+    Escribe las tablas de resumen verticalmente en una sola hoja.
+    """
+    font_header = Font(bold=True, size=12)
+    font_table_hdr = Font(bold=True)
+    
+    # 1. Escribir tabla General
+    ws.cell(row=2, column=1, value="ICF General").font = font_header
+    for col_idx, col_name in enumerate(df_general.columns, 1):
+        cell = ws.cell(row=3, column=col_idx, value=col_name)
+        cell.font = font_table_hdr
+    for row_idx, row_vals in enumerate(df_general.values, 4):
+        for col_idx, val in enumerate(row_vals, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=val)
+            if isinstance(val, (int, float)):
+                col_name_str = str(df_general.columns[col_idx-1]).lower()
+                cell.number_format = '0.000' if 'general' in col_name_str else '0.00'
+            
+    # 2. Escribir tabla Por Tipo Demanda
+    start_row_2 = 3 + len(df_general) + 3
+    ws.cell(row=start_row_2 - 1, column=1, value="Por Tipo Demanda").font = font_header
+    for col_idx, col_name in enumerate(df_tipo_demanda.columns, 1):
+        cell = ws.cell(row=start_row_2, column=col_idx, value=col_name)
+        cell.font = font_table_hdr
+    for r_idx, row_vals in enumerate(df_tipo_demanda.values, start_row_2 + 1):
+        for col_idx, val in enumerate(row_vals, 1):
+            cell = ws.cell(row=r_idx, column=col_idx, value=val)
+            if isinstance(val, (int, float)):
+                cell.number_format = '0.00'
+            
+    # 3. Escribir tabla Por Tipo Demanda y Servicio
+    start_row_3 = start_row_2 + len(df_tipo_demanda) + 4
+    ws.cell(row=start_row_3 - 1, column=1, value="Por Tipo Demanda y Servicio").font = font_header
+    for col_idx, col_name in enumerate(df_serv_demanda.columns, 1):
+        cell = ws.cell(row=start_row_3, column=col_idx, value=col_name)
+        cell.font = font_table_hdr
+    for r_idx, row_vals in enumerate(df_serv_demanda.values, start_row_3 + 1):
+        for col_idx, val in enumerate(row_vals, 1):
+            cell = ws.cell(row=r_idx, column=col_idx, value=val)
+            if isinstance(val, (int, float)):
+                cell.number_format = '0.00'
+
+
 def agregar_hoja_simulacion(
     workbook,
     df_sim: pd.DataFrame,
@@ -355,14 +447,26 @@ def agregar_hoja_simulacion(
     ultima_fecha,
     label_promedio: str = "simulacion",
     label_resumen: str = "ICF simulado",
+    psi_valor: float = 0.90,
 ) -> None:
-    """Agrega una pestaña al libro de Excel con formato avanzado y escala de colores."""
+    """
+    Crea una hoja en el libro de Excel y escribe los datos día a día
+    organizados en tablas paralelas (side-by-side) por tipo de demanda, incluyendo
+    fórmulas de promedio de Excel, formato condicional de 3 colores y una columna
+    dedicada al Pago ajustado (con fórmula IF/ROUND).
+    """
+    # Intentar extraer psi_valor dinámicamente si el DataFrame tiene la columna
+    if "psi" in df_sim.columns and not df_sim.empty:
+        psi_valor = float(df_sim["psi"].iloc[0])
+
     # Orden lógico de las demandas
     demand_order = ["BAJA", "MEDIA", "ALTA"]
     tipos_demanda = [td for td in demand_order if td in df_sim["tipo_demanda"].dropna().unique()]
+
+    # Mapeo de sentidos
     sentido_map = {"I": "Ida", "R": "Reg"}
 
-    # Bordes
+    # Bordes de distinción
     orange_side = Side(border_style="thin", color="FFA500")
     sim_border = Border(top=orange_side, bottom=orange_side, left=orange_side, right=orange_side)
     
@@ -376,17 +480,23 @@ def agregar_hoja_simulacion(
 
     start_col = 1
     average_cells = []
+    pago_cells = []
 
     for td in tipos_demanda:
+        # Filtrar por tipo de demanda
         df_td = df_sim[df_sim["tipo_demanda"] == td].copy()
         if df_td.empty:
             continue
 
+        # Ordenar cronológicamente
         df_td = df_td.sort_values(["Fecha", "periodo"])
+
+        # Obtener las combinaciones únicas de servicio/sentido para esta demanda
         combinaciones = df_td[["servicio", "sentido"]].drop_duplicates().sort_values(["servicio", "sentido"])
         if combinaciones.empty:
             continue
 
+        # Pivotear para obtener Fecha/Periodo como índice y (servicio, sentido) como columnas
         pivot = df_td.pivot_table(
             index=["Fecha", "periodo"],
             columns=["servicio", "sentido"],
@@ -395,7 +505,7 @@ def agregar_hoja_simulacion(
         )
         pivot = pivot.sort_index(level=["Fecha", "periodo"])
 
-        # Cabeceras
+        # Escribir cabeceras
         ws.cell(row=2, column=start_col + 1, value="Promedio de Frecuencia").font = Font(bold=True)
         ws.cell(row=2, column=start_col + 3, value="Servicio_dicc").font = Font(bold=True)
         ws.cell(row=2, column=start_col + 4, value="Sentido").font = Font(bold=True)
@@ -415,12 +525,14 @@ def agregar_hoja_simulacion(
             col_idx = start_col + 3 + idx
             data_cols.append(col_idx)
 
+            # Escribir servicio en fila 3
             ws.cell(row=3, column=col_idx, value=srv).font = Font(bold=True)
             ws.cell(row=3, column=col_idx).alignment = align_center
+            # Escribir sentido en fila 4
             ws.cell(row=4, column=col_idx, value=sentido_map.get(sent, sent)).font = Font(bold=True)
             ws.cell(row=4, column=col_idx).alignment = align_center
 
-        # Filas de datos
+        # Escribir filas de datos
         num_rows = len(pivot)
         for row_idx, ((fecha, per), row_vals) in enumerate(pivot.iterrows()):
             excel_row = 5 + row_idx
@@ -428,20 +540,24 @@ def agregar_hoja_simulacion(
             is_simulated = (fecha_val > pd.to_datetime(ultima_fecha))
             current_border = sim_border if is_simulated else real_border
 
+            # Columna Dia (Fórmula TEXT)
             fecha_cell = f"{get_column_letter(start_col + 1)}{excel_row}"
             cell_dia = ws.cell(row=excel_row, column=start_col, value=f'=TEXT({fecha_cell},"dddd")')
             cell_dia.alignment = align_center
             cell_dia.border = current_border
 
+            # Columna Fecha
             cell_fecha = ws.cell(row=excel_row, column=start_col + 1, value=fecha_val.date())
-            cell_fecha.number_format = 'yyyy-mm-dd'
+            cell_fecha.number_format = 'dd-mm-yy'
             cell_fecha.alignment = align_center
             cell_fecha.border = current_border
 
+            # Columna Periodo
             cell_per = ws.cell(row=excel_row, column=start_col + 2, value=int(per))
             cell_per.alignment = align_center
             cell_per.border = current_border
 
+            # Columnas de datos (ICF)
             for idx, (_, row_comb) in enumerate(combinaciones.iterrows()):
                 srv = row_comb["servicio"]
                 sent = row_comb["sentido"]
@@ -456,46 +572,73 @@ def agregar_hoja_simulacion(
                     cell_val.value = float(val)
                     cell_val.number_format = '0.00'
 
-        # Fórmulas de resumen por bloque
+        # Escribir el promedio de este tipo de demanda
         end_col = start_col + 2 + len(combinaciones)
         avg_col = end_col + 2
+        pago_col = end_col + 3
 
+        # 1. Promedio simple
         ws.cell(row=3, column=avg_col, value=f'Promedio {label_promedio} "{td}"').font = Font(bold=True)
         ws.cell(row=3, column=avg_col).alignment = align_center
 
         first_data_cell = f"{get_column_letter(start_col + 3)}5"
         last_data_cell = f"{get_column_letter(end_col)}{5 + num_rows - 1}"
-        ws.cell(row=4, column=avg_col, value=f'=AVERAGE({first_data_cell}:{last_data_cell})').font = Font(bold=True)
+        ws.cell(row=4, column=avg_col, value=f'=ROUND(AVERAGE({first_data_cell}:{last_data_cell}), 2)').font = Font(bold=True)
         ws.cell(row=4, column=avg_col).alignment = align_center
         ws.cell(row=4, column=avg_col).number_format = '0.00000'
 
         average_cells.append(f"{get_column_letter(avg_col)}4")
 
-        # Formato condicional
+        # 2. Promedio Pago (regla de pago 0.5 y psi_valor a nivel de demanda)
+        ws.cell(row=3, column=pago_col, value=f'Pago {label_promedio} "{td}"').font = Font(bold=True)
+        ws.cell(row=3, column=pago_col).alignment = align_center
+
+        avg_cell_ref = f"{get_column_letter(avg_col)}4"
+        pago_formula = f"=IF({avg_cell_ref}<0.5, 0.5, IF({avg_cell_ref}>{psi_valor:.2f}, 1.0, {avg_cell_ref}))"
+        ws.cell(row=4, column=pago_col, value=pago_formula).font = Font(bold=True)
+        ws.cell(row=4, column=pago_col).alignment = align_center
+        ws.cell(row=4, column=pago_col).number_format = '0.00000'
+
+        pago_cells.append(f"{get_column_letter(pago_col)}4")
+
+        # Formato condicional (escala de 3 colores) para el rango de datos
         cell_range = f"{get_column_letter(start_col + 3)}5:{get_column_letter(end_col)}{5 + num_rows - 1}"
         color_scale = ColorScaleRule(
-            start_type='min', start_color='FFF8696B',
-            mid_type='percentile', mid_value=50, mid_color='FFFFEB84',
-            end_type='max', end_color='FF63BE7B'
+            start_type='min', start_color='FFF8696B', # Rojo suave
+            mid_type='percentile', mid_value=50, mid_color='FFFFEB84', # Amarillo suave
+            end_type='max', end_color='FF63BE7B' # Verde suave
         )
         ws.conditional_formatting.add(cell_range, color_scale)
 
+        # Siguiente tabla empieza 5 columnas después (deja 1 columna en blanco tras el Pago)
         start_col = end_col + 5
 
-    # Resumen General
+    # Escribir resumen general al final
     if average_cells:
-        summary_label_col = start_col - 2
-        summary_val_col = start_col - 1
+        summary_label_col = start_col
+        summary_val_col = start_col + 1
 
+        # ICF Promedio
         ws.cell(row=3, column=summary_label_col, value=label_resumen).font = Font(bold=True)
         ws.cell(row=3, column=summary_label_col).alignment = align_center
 
         avg_formula_terms = "+".join(average_cells)
-        formula = f"=({avg_formula_terms})/{len(average_cells)}"
-        cell_summary = ws.cell(row=3, column=summary_val_col, value=formula)
+        formula_avg = f"=({avg_formula_terms})/{len(average_cells)}"
+        cell_summary = ws.cell(row=3, column=summary_val_col, value=formula_avg)
         cell_summary.font = Font(bold=True)
         cell_summary.alignment = align_center
         cell_summary.number_format = '0.00000'
+
+        # ICF Pago
+        ws.cell(row=5, column=summary_label_col, value=f"{label_resumen} Pago").font = Font(bold=True)
+        ws.cell(row=5, column=summary_label_col).alignment = align_center
+
+        pago_formula_terms = "+".join(pago_cells)
+        formula_pago = f"=ROUND(({pago_formula_terms})/{len(pago_cells)}, 2)"
+        cell_pago_summary = ws.cell(row=5, column=summary_val_col, value=formula_pago)
+        cell_pago_summary.font = Font(bold=True)
+        cell_pago_summary.alignment = align_center
+        cell_pago_summary.number_format = '0.00000'
 
 
 def exportar_resumenes_icf(
@@ -506,35 +649,54 @@ def exportar_resumenes_icf(
     ruta_archivo,
     df_icf: pd.DataFrame = None,
 ) -> None:
-    """Exporta reporte.xlsx de datos reales observados a un Excel en memoria."""
+    """
+    Exporta los resúmenes del ICF a un único Excel.
+    La primera pestaña es "Detalle_Diario" (si se entrega df_icf) y la
+    segunda es "Resumen", que agrupa todas las tablas de resumen verticalmente.
+    """
+    wb = Workbook()
+
+    # 1. Crear 'Detalle_Diario' si df_icf existe
+    if df_icf is not None and not df_icf.empty:
+        ultima_fecha_real = df_icf["Fecha"].max()
+        agregar_hoja_simulacion(
+            wb,
+            df_icf,
+            "Detalle_Diario",
+            ultima_fecha_real,
+            label_promedio="observado",
+            label_resumen="ICF observado",
+        )
+        if "Sheet" in wb.sheetnames:
+            wb.remove(wb["Sheet"])
+
+    # 2. Crear 'Resumen'
+    ws_resumen = wb.create_sheet(title="Resumen")
+    ws_resumen.views.sheetView[0].showGridLines = True
+
     df_tipo_demanda = tabla_por_tipo_demanda.reset_index().rename(
         columns={"ICF": "ICF_promedio"}
     )
-    df_general = pd.DataFrame({"ICF_general": [icf_general]})
-    df_tipo_demanda_servicio = tabla_por_tipo_demanda_servicio.reset_index().rename(
+    
+    psi_valor = 0.90
+    if df_icf is not None and not df_icf.empty and "psi" in df_icf.columns:
+        psi_valor = float(df_icf["psi"].iloc[0])
+
+    df_tipo_demanda["ICF_pago"] = df_tipo_demanda["ICF_promedio"].apply(
+        lambda val: aplicar_regla_pago(val, psi=psi_valor)
+    )
+    df_serv_demanda = tabla_por_tipo_demanda_servicio.reset_index().rename(
         columns={"ICF": "ICF_promedio"}
     )
-    df_pago = pd.DataFrame({"ICF_pago": [icf_pago]})
+    df_general = pd.DataFrame({"ICF_general": [icf_general], "ICF_pago": [icf_pago]})
 
-    with pd.ExcelWriter(ruta_archivo, engine="openpyxl") as writer:
-        df_tipo_demanda.to_excel(writer, sheet_name="Por_TipoDemanda", index=False)
-        df_general.to_excel(writer, sheet_name="ICF_General", index=False)
-        df_pago.to_excel(writer, sheet_name="ICF_General_Pago", index=False)
-        df_tipo_demanda_servicio.to_excel(
-            writer, sheet_name="Por_TipoDemanda_Servicio", index=False
-        )
+    escribir_tablas_resumen(ws_resumen, df_general, df_tipo_demanda, df_serv_demanda)
 
-        if df_icf is not None and not df_icf.empty:
-            workbook = writer.book
-            ultima_fecha_real = df_icf["Fecha"].max()
-            agregar_hoja_simulacion(
-                workbook,
-                df_icf,
-                "Detalle_Diario",
-                ultima_fecha_real,
-                label_promedio="observado",
-                label_resumen="ICF observado",
-            )
+    # Si 'Sheet' por defecto sigue ahí, la removemos
+    if "Sheet" in wb.sheetnames:
+        wb.remove(wb["Sheet"])
+
+    wb.save(ruta_archivo)
 
 
 def exportar_reporte_proyeccion(
@@ -546,27 +708,57 @@ def exportar_reporte_proyeccion(
     ultima_fecha,
     ruta_archivo
 ) -> None:
-    """Exporta reporte_proyeccion.xlsx de proyecciones a un Excel en memoria."""
+    """
+    Exporta todos los resultados de simulación y proyecciones a un archivo Excel.
+    """
+    wb = Workbook()
+
+    # 1. Agregar 'Simulacion' (primera pestaña)
+    agregar_hoja_simulacion(wb, df_sim, "Simulacion", ultima_fecha)
+    if "Sheet" in wb.sheetnames:
+        wb.remove(wb["Sheet"])
+
+    # 2. Agregar 'Simulacion_Ideal' (segunda pestaña)
+    agregar_hoja_simulacion(wb, df_ideal, "Simulacion_Ideal", ultima_fecha)
+
+    # 3. Agregar 'Comparativa' (tercera pestaña)
+    ws_comp = wb.create_sheet(title="Comparativa")
+    ws_comp.views.sheetView[0].showGridLines = True
+    for col_idx, col_name in enumerate(df_comparativa.columns, 1):
+        ws_comp.cell(row=1, column=col_idx, value=col_name).font = Font(bold=True)
+    for r_idx, row_vals in enumerate(df_comparativa.values, 2):
+        for col_idx, val in enumerate(row_vals, 1):
+            ws_comp.cell(row=r_idx, column=col_idx, value=val)
+
+    # 4. Agregar 'Resumen_Simulado' (cuarta pestaña)
+    ws_res_sim = wb.create_sheet(title="Resumen_Simulado")
+    ws_res_sim.views.sheetView[0].showGridLines = True
     df_demanda_sim = tabla_demanda_sim.reset_index().rename(columns={"ICF": "ICF_promedio"})
+    
+    psi_valor_sim = 0.90
+    if "psi" in df_sim.columns and not df_sim.empty:
+        psi_valor_sim = float(df_sim["psi"].iloc[0])
+        
+    df_demanda_sim["ICF_pago"] = df_demanda_sim["ICF_promedio"].apply(lambda val: aplicar_regla_pago(val, psi=psi_valor_sim))
     df_serv_sim = tabla_serv_sim.reset_index().rename(columns={"ICF": "ICF_promedio"})
     df_gen_sim = pd.DataFrame({"ICF_general": [icf_gen_sim], "ICF_pago": [icf_pag_sim]})
+    escribir_tablas_resumen(ws_res_sim, df_gen_sim, df_demanda_sim, df_serv_sim)
 
+    # 5. Agregar 'Resumen_Ideal' (quinta pestaña)
+    ws_res_ideal = wb.create_sheet(title="Resumen_Ideal")
+    ws_res_ideal.views.sheetView[0].showGridLines = True
     df_demanda_ideal = tabla_demanda_ideal.reset_index().rename(columns={"ICF": "ICF_promedio"})
+    
+    psi_valor_ideal = 0.90
+    if "psi" in df_ideal.columns and not df_ideal.empty:
+        psi_valor_ideal = float(df_ideal["psi"].iloc[0])
+        
+    df_demanda_ideal["ICF_pago"] = df_demanda_ideal["ICF_promedio"].apply(lambda val: aplicar_regla_pago(val, psi=psi_valor_ideal))
     df_serv_ideal = tabla_serv_ideal.reset_index().rename(columns={"ICF": "ICF_promedio"})
     df_gen_ideal = pd.DataFrame({"ICF_general": [icf_gen_ideal], "ICF_pago": [icf_pag_ideal]})
+    escribir_tablas_resumen(ws_res_ideal, df_gen_ideal, df_demanda_ideal, df_serv_ideal)
 
-    with pd.ExcelWriter(ruta_archivo, engine="openpyxl") as writer:
-        df_comparativa.to_excel(writer, sheet_name="Comparativa", index=False)
-        df_gen_sim.to_excel(writer, sheet_name="Simulado_ICF_General", index=False)
-        df_demanda_sim.to_excel(writer, sheet_name="Simulado_Por_TipoDemanda", index=False)
-        df_serv_sim.to_excel(writer, sheet_name="Simulado_Por_Servicio", index=False)
-        df_gen_ideal.to_excel(writer, sheet_name="Ideal_ICF_General", index=False)
-        df_demanda_ideal.to_excel(writer, sheet_name="Ideal_Por_TipoDemanda", index=False)
-        df_serv_ideal.to_excel(writer, sheet_name="Ideal_Por_Servicio", index=False)
-
-        workbook = writer.book
-        agregar_hoja_simulacion(workbook, df_sim, "Simulacion", ultima_fecha)
-        agregar_hoja_simulacion(workbook, df_ideal, "Simulacion_Ideal", ultima_fecha)
+    wb.save(ruta_archivo)
 
 
 # --- ORQUESTADOR PRINCIPAL DEL CÁLCULO ---
@@ -603,9 +795,12 @@ def ejecutar_calculo_icf(operador: str, anio: int, mes: int, db_path: str) -> Tu
     # 3. Crear df_icf observado (a la fecha)
     df_icf_obs = crear_df_icf(df_a1, df_conteo)
     
-    # Determinar psi (asumimos > 24 meses de operación por defecto -> psi = 0.95)
+    # Calcular psi dinámicamente (por defecto mas_de_24_meses=True en el bot)
+    df_icf_obs["psi"] = calcular_psi(df_icf_obs, mas_de_24_meses=True)
     psi_valor = 0.95
-    
+    if not df_icf_obs.empty and "psi" in df_icf_obs.columns:
+        psi_valor = float(df_icf_obs["psi"].iloc[0])
+        
     # 4. Cargar histórico acumulado de meses anteriores
     inicio_mes = pd.Timestamp(year=anio, month=mes, day=1)
     df_conteo_hist = obtener_df_conteo_historico_db(db_path, operador, inicio_mes)
@@ -628,6 +823,10 @@ def ejecutar_calculo_icf(operador: str, anio: int, mes: int, db_path: str) -> Tu
     # Simulación Estocástica y Simulación Ideal
     df_sim = proyectar_simulado_estocastico(df_icf_completo, df_icf_hist, ultima_fecha_real)
     df_ideal = proyectar_ideal(df_icf_completo, ultima_fecha_real)
+    
+    # Asignar psi a los dataframes de proyecciones
+    df_sim["psi"] = calcular_psi(df_sim, mas_de_24_meses=True)
+    df_ideal["psi"] = calcular_psi(df_ideal, mas_de_24_meses=True)
     
     # 6. Calcular resúmenes para cada escenario
     res_td_obs, res_gen_obs, res_serv_obs, res_pago_obs = construir_resumenes_icf(df_icf_obs, psi_valor)
