@@ -795,9 +795,9 @@ def ejecutar_calculo_icf(operador: str, anio: int, mes: int, db_path: str) -> Tu
     # 3. Crear df_icf observado (a la fecha)
     df_icf_obs = crear_df_icf(df_a1, df_conteo)
     
-    # Calcular psi dinámicamente (por defecto mas_de_24_meses=True en el bot)
-    df_icf_obs["psi"] = calcular_psi(df_icf_obs, mas_de_24_meses=True)
-    psi_valor = 0.95
+    # Calcular psi dinámicamente (por defecto mas_de_24_meses=False para usar 0.90 en el bot)
+    df_icf_obs["psi"] = calcular_psi(df_icf_obs, mas_de_24_meses=False)
+    psi_valor = 0.90
     if not df_icf_obs.empty and "psi" in df_icf_obs.columns:
         psi_valor = float(df_icf_obs["psi"].iloc[0])
         
@@ -825,8 +825,8 @@ def ejecutar_calculo_icf(operador: str, anio: int, mes: int, db_path: str) -> Tu
     df_ideal = proyectar_ideal(df_icf_completo, ultima_fecha_real)
     
     # Asignar psi a los dataframes de proyecciones
-    df_sim["psi"] = calcular_psi(df_sim, mas_de_24_meses=True)
-    df_ideal["psi"] = calcular_psi(df_ideal, mas_de_24_meses=True)
+    df_sim["psi"] = calcular_psi(df_sim, mas_de_24_meses=False)
+    df_ideal["psi"] = calcular_psi(df_ideal, mas_de_24_meses=False)
     
     # 6. Calcular resúmenes para cada escenario
     res_td_obs, res_gen_obs, res_serv_obs, res_pago_obs = construir_resumenes_icf(df_icf_obs, psi_valor)
