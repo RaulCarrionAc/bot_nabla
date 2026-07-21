@@ -244,7 +244,10 @@ def guardar_expediciones_en_db(df: pd.DataFrame, operador: str, fecha_inicio: st
                 frecuencia = float(row.get('Frecuencia Exigida')) if not pd.isna(row.get('Frecuencia Exigida')) else None
                 inicio_exp = ""
                 fin_exp = ""
-                servicio = str(row.get('Variante', ''))
+                servicio = str(row.get('Variante', '')).strip()
+                if operador.lower() == "tasacop":
+                    import re
+                    servicio = re.sub(r"_(I|R)$", "", servicio)
                 propietario = None
                 
                 pois = {}

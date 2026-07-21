@@ -148,7 +148,10 @@ def importar_expediciones(file_path: str):
                 frecuencia = float(row.get('Frecuencia Exigida')) if not pd.isna(row.get('Frecuencia Exigida')) else None
                 inicio_exp = ""
                 fin_exp = ""
-                servicio = str(row.get('Variante', ''))  # Variante actúa como servicio
+                servicio = str(row.get('Variante', '')).strip()
+                if operador.lower() == "tasacop":
+                    import re
+                    servicio = re.sub(r"_(I|R)$", "", servicio)
                 propietario = None
                 
                 # Checkpoints tienen formato "01" a "22"

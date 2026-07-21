@@ -64,7 +64,7 @@ def obtener_df_conteo_db(db_path: str, operador: str, anio: int, mes: int) -> pd
         WHERE operador = ?
           AND strftime('%Y', Fecha) = ?
           AND strftime('%m', Fecha) = ?
-          AND (UPPER(Estado) = 'VALIDA' OR UPPER(Estado) = 'VÁLIDA')
+          AND (Estado IN ('VALIDA', 'VÁLIDA', 'Valida', 'Válida', 'valida', 'válida'))
         GROUP BY Fecha, Servicio, Sentido, Periodo
     """
     mes_str = f"{mes:02d}"
@@ -77,8 +77,14 @@ def obtener_df_conteo_db(db_path: str, operador: str, anio: int, mes: int) -> pd
     df["Fecha"] = pd.to_datetime(df["Fecha"])
     df["sentido"] = df["sentido"].astype(str).str.strip().str.upper().str[0]
     df["servicio"] = df["servicio"].astype(str).str.strip()
-    df["periodo"] = pd.to_numeric(df["periodo"], errors="coerce").astype("Int64")
     df["tipo_dia"] = _calcular_tipo_dia(df["Fecha"])
+    
+    if operador.lower() == "tasacop":
+        df["servicio"] = df["servicio"].str.replace(r"_(I|R)$", "", regex=True)
+        # Agrupar y sumar por si quedaron registros duplicados tras limpiar el sufijo
+        df = df.groupby(["Fecha", "servicio", "sentido", "periodo", "tipo_dia"], as_index=False)["expediciones_observadas"].sum()
+        
+    df["periodo"] = pd.to_numeric(df["periodo"], errors="coerce").astype("Int64")
     
     return df
 
@@ -96,7 +102,7 @@ def obtener_df_conteo_historico_db(db_path: str, operador: str, fecha_limite: pd
         FROM expediciones
         WHERE operador = ?
           AND Fecha < ?
-          AND (UPPER(Estado) = 'VALIDA' OR UPPER(Estado) = 'VÁLIDA')
+          AND (Estado IN ('VALIDA', 'VÁLIDA', 'Valida', 'Válida', 'valida', 'válida'))
         GROUP BY Fecha, Servicio, Sentido, Periodo
     """
     limite_str = fecha_limite.strftime("%Y-%m-%d")
@@ -109,8 +115,14 @@ def obtener_df_conteo_historico_db(db_path: str, operador: str, fecha_limite: pd
     df["Fecha"] = pd.to_datetime(df["Fecha"])
     df["sentido"] = df["sentido"].astype(str).str.strip().str.upper().str[0]
     df["servicio"] = df["servicio"].astype(str).str.strip()
-    df["periodo"] = pd.to_numeric(df["periodo"], errors="coerce").astype("Int64")
     df["tipo_dia"] = _calcular_tipo_dia(df["Fecha"])
+    
+    if operador.lower() == "tasacop":
+        df["servicio"] = df["servicio"].str.replace(r"_(I|R)$", "", regex=True)
+        # Agrupar y sumar por si quedaron registros duplicados tras limpiar el sufijo
+        df = df.groupby(["Fecha", "servicio", "sentido", "periodo", "tipo_dia"], as_index=False)["expediciones_observadas"].sum()
+        
+    df["periodo"] = pd.to_numeric(df["periodo"], errors="coerce").astype("Int64")
     
     return df
 
