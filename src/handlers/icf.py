@@ -177,7 +177,7 @@ def crear_df_icf(df_a1: pd.DataFrame, df_conteo: pd.DataFrame) -> pd.DataFrame:
     )
     df_icf = df_icf.rename(columns={"expediciones_observadas": "EO"})
     df_icf["EO"] = df_icf["EO"].fillna(0)
-    df_icf['ICF'] = np.floor(np.minimum(df_icf['EE'], df_icf['EO']) / df_icf['EE'] * 100 + 0.5) / 100
+    df_icf['ICF'] = np.floor(np.minimum(df_icf['EE'], df_icf['EO']) / df_icf['EE'] * 1000 + 0.5) / 1000
     return df_icf
 
 
@@ -227,16 +227,16 @@ def construir_resumenes_icf(df_icf: pd.DataFrame, psi_valor: float = 0.90):
     if df_icf.empty:
         return pd.Series(dtype=float), 0.0, pd.Series(dtype=float), 0.5
         
-    tabla_por_tipo_demanda = round_half_up(df_icf.groupby("tipo_demanda")["ICF"].mean(), 2)
+    tabla_por_tipo_demanda = round_half_up(df_icf.groupby("tipo_demanda")["ICF"].mean(), 3)
     icf_general = round_half_up(tabla_por_tipo_demanda.mean(), 3)
     tabla_por_tipo_demanda_servicio = round_half_up(
-        df_icf.groupby(["tipo_demanda", "servicio"])["ICF"].mean(), 2
+        df_icf.groupby(["tipo_demanda", "servicio"])["ICF"].mean(), 3
     )
     
     # Aplicar la regla de pago a nivel de tipo de demanda
     tabla_por_tipo_demanda_pago = tabla_por_tipo_demanda.apply(lambda val: aplicar_regla_pago(val, psi=psi_valor))
-    # Promedio de los tipos de demanda ajustados, redondeado a 2 decimales
-    icf_pago = round_half_up(tabla_por_tipo_demanda_pago.mean(), 2)
+    # Promedio de los tipos de demanda ajustados, redondeado a 3 decimales
+    icf_pago = round_half_up(tabla_por_tipo_demanda_pago.mean(), 3)
 
     return tabla_por_tipo_demanda, icf_general, tabla_por_tipo_demanda_servicio, icf_pago
 
@@ -259,7 +259,7 @@ def tabla_periodo_vs_fecha(df_icf: pd.DataFrame, servicio: str, sentido: str) ->
         aggfunc='mean'
     )
     tabla.columns = [c.strftime('%Y-%m-%d') for c in tabla.columns]
-    tabla['Promedio'] = tabla.mean(axis=1).round(2)
+    tabla['Promedio'] = tabla.mean(axis=1).round(3)
     return tabla
 
 
@@ -337,8 +337,8 @@ def proyectar_simulado_estocastico(
     # Recalcular el ICF para los días proyectados
     df_sim.loc[missing_mask, "ICF"] = np.floor(
         np.minimum(df_sim.loc[missing_mask, "EE"], df_sim.loc[missing_mask, "EO"]) 
-        / df_sim.loc[missing_mask, "EE"] * 100 + 0.5
-    ) / 100
+        / df_sim.loc[missing_mask, "EE"] * 1000 + 0.5
+    ) / 1000
 
     return df_sim
 
@@ -424,8 +424,7 @@ def escribir_tablas_resumen(ws, df_general: pd.DataFrame, df_tipo_demanda: pd.Da
         for col_idx, val in enumerate(row_vals, 1):
             cell = ws.cell(row=row_idx, column=col_idx, value=val)
             if isinstance(val, (int, float)):
-                col_name_str = str(df_general.columns[col_idx-1]).lower()
-                cell.number_format = '0.000' if 'general' in col_name_str else '0.00'
+                cell.number_format = '0.000'
             
     # 2. Escribir tabla Por Tipo Demanda
     start_row_2 = 3 + len(df_general) + 3
@@ -437,7 +436,7 @@ def escribir_tablas_resumen(ws, df_general: pd.DataFrame, df_tipo_demanda: pd.Da
         for col_idx, val in enumerate(row_vals, 1):
             cell = ws.cell(row=r_idx, column=col_idx, value=val)
             if isinstance(val, (int, float)):
-                cell.number_format = '0.00'
+                cell.number_format = '0.000'
             
     # 3. Escribir tabla Por Tipo Demanda y Servicio
     start_row_3 = start_row_2 + len(df_tipo_demanda) + 4
@@ -449,7 +448,7 @@ def escribir_tablas_resumen(ws, df_general: pd.DataFrame, df_tipo_demanda: pd.Da
         for col_idx, val in enumerate(row_vals, 1):
             cell = ws.cell(row=r_idx, column=col_idx, value=val)
             if isinstance(val, (int, float)):
-                cell.number_format = '0.00'
+                cell.number_format = '0.000'
 
 
 def agregar_hoja_simulacion(
@@ -582,7 +581,7 @@ def agregar_hoja_simulacion(
 
                 if pd.notna(val):
                     cell_val.value = float(val)
-                    cell_val.number_format = '0.00'
+                    cell_val.number_format = '0.000'
 
         # Escribir el promedio de este tipo de demanda
         end_col = start_col + 2 + len(combinaciones)
@@ -595,9 +594,9 @@ def agregar_hoja_simulacion(
 
         first_data_cell = f"{get_column_letter(start_col + 3)}5"
         last_data_cell = f"{get_column_letter(end_col)}{5 + num_rows - 1}"
-        ws.cell(row=4, column=avg_col, value=f'=ROUND(AVERAGE({first_data_cell}:{last_data_cell}), 2)').font = Font(bold=True)
+        ws.cell(row=4, column=avg_col, value=f'=ROUND(AVERAGE({first_data_cell}:{last_data_cell}), 3)').font = Font(bold=True)
         ws.cell(row=4, column=avg_col).alignment = align_center
-        ws.cell(row=4, column=avg_col).number_format = '0.00000'
+        ws.cell(row=4, column=avg_col).number_format = '0.000'
 
         average_cells.append(f"{get_column_letter(avg_col)}4")
 
@@ -606,10 +605,10 @@ def agregar_hoja_simulacion(
         ws.cell(row=3, column=pago_col).alignment = align_center
 
         avg_cell_ref = f"{get_column_letter(avg_col)}4"
-        pago_formula = f"=IF({avg_cell_ref}<0.5, 0.5, IF({avg_cell_ref}>{psi_valor:.2f}, 1.0, {avg_cell_ref}))"
+        pago_formula = f"=IF({avg_cell_ref}<0.5, 0.5, IF({avg_cell_ref}>{psi_valor:.3f}, 1.0, {avg_cell_ref}))"
         ws.cell(row=4, column=pago_col, value=pago_formula).font = Font(bold=True)
         ws.cell(row=4, column=pago_col).alignment = align_center
-        ws.cell(row=4, column=pago_col).number_format = '0.00000'
+        ws.cell(row=4, column=pago_col).number_format = '0.000'
 
         pago_cells.append(f"{get_column_letter(pago_col)}4")
 
@@ -639,18 +638,18 @@ def agregar_hoja_simulacion(
         cell_summary = ws.cell(row=3, column=summary_val_col, value=formula_avg)
         cell_summary.font = Font(bold=True)
         cell_summary.alignment = align_center
-        cell_summary.number_format = '0.00000'
+        cell_summary.number_format = '0.000'
 
         # ICF Pago
         ws.cell(row=5, column=summary_label_col, value=f"{label_resumen} Pago").font = Font(bold=True)
         ws.cell(row=5, column=summary_label_col).alignment = align_center
 
         pago_formula_terms = "+".join(pago_cells)
-        formula_pago = f"=ROUND(({pago_formula_terms})/{len(pago_cells)}, 2)"
+        formula_pago = f"=ROUND(({pago_formula_terms})/{len(pago_cells)}, 3)"
         cell_pago_summary = ws.cell(row=5, column=summary_val_col, value=formula_pago)
         cell_pago_summary.font = Font(bold=True)
         cell_pago_summary.alignment = align_center
-        cell_pago_summary.number_format = '0.00000'
+        cell_pago_summary.number_format = '0.000'
 
 
 def exportar_resumenes_icf(
@@ -883,10 +882,10 @@ def ejecutar_calculo_icf(operador: str, anio: int, mes: int, db_path: str) -> Tu
             val = res_td[d]
             val_pago = aplicar_regla_pago(val, psi)
             if abs(val - val_pago) > 1e-9:
-                lines.append(f"   - Demanda {d.lower()}: *{val:.2f}* ----> *{val_pago:.2f}*")
+                lines.append(f"   - Demanda {d.lower()}: *{val:.3f}* ----> *{val_pago:.3f}*")
             else:
-                lines.append(f"   - Demanda {d.lower()}: *{val:.2f}*")
-        lines.append(f"   - ICF: *{res_pago:.2f}*")
+                lines.append(f"   - Demanda {d.lower()}: *{val:.3f}*")
+        lines.append(f"   - ICF: *{res_pago:.3f}*")
         return "\n".join(lines)
 
     resumen_txt = (
