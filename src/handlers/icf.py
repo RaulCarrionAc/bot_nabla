@@ -871,17 +871,30 @@ def ejecutar_calculo_icf(operador: str, anio: int, mes: int, db_path: str) -> Tu
     proyeccion_bytes = proyeccion_io.getvalue()
     
     # 10. Resumen texto
+    def format_scenario(titulo_icono, titulo_nombre, res_td, res_pago, psi):
+        lines = [f"{titulo_icono} *{titulo_nombre}*:"]
+        order = ["BAJA", "MEDIA", "ALTA"]
+        sorted_keys = [k for k in order if k in res_td.index]
+        for k in res_td.index:
+            if k not in sorted_keys:
+                sorted_keys.append(k)
+        
+        for d in sorted_keys:
+            val = res_td[d]
+            val_pago = aplicar_regla_pago(val, psi)
+            if abs(val - val_pago) > 1e-9:
+                lines.append(f"   - Demanda {d.lower()}: *{val:.2f}* ----> *{val_pago:.2f}*")
+            else:
+                lines.append(f"   - Demanda {d.lower()}: *{val:.2f}*")
+        lines.append(f"   - ICF: *{res_pago:.2f}*")
+        return "\n".join(lines)
+
     resumen_txt = (
         f"📊 *Reporte ICF: {operador.upper()} - {mes:02d}/{anio}*\n\n"
-        f"🟢 *Real Observado (a la fecha)*:\n"
-        f"   - ICF General: *{res_gen_obs:.3f}*\n"
-        f"   - ICF Pago: *{res_pago_obs:.2f}*\n\n"
-        f"🔵 *Proyección Simulación Estocástica*:\n"
-        f"   - ICF General: *{res_gen_sim:.3f}*\n"
-        f"   - ICF Pago: *{res_pago_sim:.2f}*\n\n"
-        f"⚫ *Proyección Escenario Ideal*:\n"
-        f"   - ICF General: *{res_gen_ideal:.3f}*\n"
-        f"   - ICF Pago: *{res_pago_ideal:.2f}*\n"
+        f"{format_scenario('🟢', 'Real Observado (a la fecha)', res_td_obs, res_pago_obs, psi_valor)}\n\n"
+        f"{format_scenario('🔵', 'Proyección Simulación Estocástica', res_td_sim, res_pago_sim, psi_valor)}\n\n"
+        f"{format_scenario('⚫', 'Proyección Escenario Ideal', res_td_ideal, res_pago_ideal, psi_valor)}"
     )
     
     return reporte_bytes, proyeccion_bytes, resumen_txt
+
