@@ -26,6 +26,7 @@ bot_nabla/
 ├── src/                        # Código fuente del bot y webhook
 │   ├── handlers/
 │   │   ├── icf.py              # Motor de cálculo y proyecciones del ICF (Stochastic / Ideal)
+│   │   ├── ip.py               # Motor de cálculo del Indicador de Puntualidad (IP) normativo LPP/LPO
 │   │   ├── puntualidad.py      # Motor de cálculo del indicador de puntualidad
 │   │   └── velocidades.py      # Motor de análisis cinemático, tiempos de viaje y velocidades PO A5
 │   ├── generators/

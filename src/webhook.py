@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request, BackgroundTasks
+from typing import Optional, List, Dict, Union, Tuple
 import uvicorn
 import base64
 import os
@@ -10,6 +11,7 @@ from database import (
 )
 from handlers.puntualidad import procesar_puntualidad_desde_db
 from handlers.icf import ejecutar_calculo_icf
+from handlers.ip import ejecutar_calculo_ip
 from datetime import datetime
 
 load_dotenv()
@@ -177,6 +179,21 @@ def tarea_calcular_icf(session_id: str, chat_id: str, operador: str, anio: int, 
     except Exception as e:
         print(f"❌ [DEBUG] Error calculando ICF: {e}", flush=True)
         enviar_mensaje(session_id, chat_id, f"❌ Error calculando ICF: Asegúrate de que las frecuencias y expediciones estén cargadas para la fecha indicada.")
+
+
+def tarea_calcular_ip(session_id: str, chat_id: str, empresa: str, anio: int, mes: int):
+    try:
+        session_id = session_id or obtener_session_id_activo()
+        excel_bytes, resumen_txt, filename = ejecutar_calculo_ip(empresa, anio, mes)
+        
+        enviar_mensaje(session_id, chat_id, resumen_txt)
+        enviar_documento(session_id, chat_id, excel_bytes, filename)
+        print(f"✅ [DEBUG] Reporte IP ({empresa.upper()} {mes:02d}/{anio}) enviado con éxito", flush=True)
+    except Exception as e:
+        print(f"❌ [DEBUG] Error calculando IP ({empresa} {mes}/{anio}): {e}", flush=True)
+        if session_id:
+            enviar_mensaje(session_id, chat_id, f"❌ Error calculando Indicador de Puntualidad (IP):\n\n{e}")
+
 
 
 def tarea_generar_reporte_tv(session_id: str, chat_id: str, mes_str: str, anio: int):
@@ -511,7 +528,7 @@ async def recibir_evento(request: Request, background_tasks: BackgroundTasks):
     es_permitido = es_admin or es_usuario_permitido(sender_clean)
 
     # Validar si el mensaje es un comando del bot
-    comandos_validos = ("!actualizar", "!puntualidad", "!icf", "!permisos", "!reporte_tv", "!reporte_velocidad", "!velocidades")
+    comandos_validos = ("!actualizar", "!puntualidad", "!icf", "!ip", "!permisos", "!reporte_tv", "!reporte_velocidad", "!velocidades")
     es_comando = any(cuerpo.startswith(cmd) for cmd in comandos_validos)
 
     if es_comando:
@@ -736,6 +753,73 @@ async def recibir_evento(request: Request, background_tasks: BackgroundTasks):
         enviar_mensaje(session_id, chat_id, f"⏳ Calculando reporte ICF para *{operador.upper()}* ({mes:02d}/{anio}). Espera un momento...")
         background_tasks.add_task(tarea_calcular_icf, session_id, chat_id, operador, anio, mes)
         return {"status": "ok"}
+
+    # Comando !ip (Indicador de Puntualidad)
+    if cuerpo.startswith("!ip"):
+        import re
+        from handlers.ip import MESES_MAP
+        parts = re.split(r'\s+', cuerpo)
+        
+        empresa = None
+        mes = None
+        anio = None
+        
+        for part in parts[1:]:
+            part_clean = part.strip().lower()
+            if part_clean in ("lider", "tasacop", "tasacoop", "toptur"):
+                empresa = "tasacop" if "tasa" in part_clean else part_clean
+            elif part_clean in MESES_MAP:
+                mes = MESES_MAP[part_clean][0]
+            elif part_clean.isdigit():
+                val = int(part_clean)
+                if 1 <= val <= 12 and mes is None:
+                    mes = val
+                elif 2000 <= val <= 2100:
+                    anio = val
+                elif 20 <= val <= 99:
+                    anio = 2000 + val
+            else:
+                # Comprobar si viene compuesto (ej. mayo26, mayo2026, 0526)
+                m_match = re.match(r"([a-z]+)(\d+)", part_clean)
+                if m_match:
+                    m_txt, a_txt = m_match.group(1), m_match.group(2)
+                    if m_txt in MESES_MAP and mes is None:
+                        mes = MESES_MAP[m_txt][0]
+                    if a_txt.isdigit() and anio is None:
+                        a_val = int(a_txt)
+                        anio = 2000 + a_val if a_val < 100 else a_val
+                        
+        hoy = datetime.now()
+        if anio is None:
+            anio = hoy.year
+        if mes is None:
+            mes = hoy.month
+        if empresa is None:
+            enviar_mensaje(
+                session_id, 
+                chat_id, 
+                "❌ *Parámetros incompletos para !ip*.\n\n"
+                "📌 *Sintaxis*: `!ip <empresa> <mes> <anio>`\n"
+                "🏢 *Empresas*: `tasacop`, `lider`, `toptur`\n"
+                "💡 *Ejemplo*: `!ip tasacop mayo 2026` o `!ip lider 5 2026`"
+            )
+            return {"status": "ok"}
+            
+        mes_nombre = f"{mes:02d}"
+        for k, v in MESES_MAP.items():
+            if v[0] == mes:
+                mes_nombre = v[2]
+                break
+                
+        print(f"✅ Comando !ip detectado: empresa={empresa}, mes={mes} ({mes_nombre}), anio={anio}", flush=True)
+        enviar_mensaje(
+            session_id, 
+            chat_id, 
+            f"⏳ Calculando *Indicador de Puntualidad (IP)* para *{empresa.upper()}* ({mes_nombre} {anio})... Por favor espera un momento."
+        )
+        background_tasks.add_task(tarea_calcular_ip, session_id, chat_id, empresa, anio, mes)
+        return {"status": "ok"}
+
 
     # Comando !reporte_tv / !reporte_velocidad (Tasacoop PO A5)
     if any(cuerpo.startswith(prefix) for prefix in ("!reporte_tv", "!reporte_velocidad", "!velocidades")):

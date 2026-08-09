@@ -17,7 +17,7 @@ wheels/
 
 # datos generados (no aplica si no usas volumenes locales, pero por si acaso)
 data/
-
+salidas/
 # sistema
 .DS_Store
 
