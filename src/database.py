@@ -45,12 +45,14 @@ class Anexo5Record(SQLModel, table=True):
     __tablename__ = "anexo_5"
     
     id: Optional[int] = Field(default=None, primary_key=True)
+    operador: str = Field(default="tasacop", index=True)
     Servicio: str
     Sentido: str
-    Anterior: str
-    hora_programada: str = Field(sa_column=Column("Hora programada", String))
-    Posterior: str
-    tipo_de_dia: str = Field(sa_column=Column("Tipo de Día", String))
+    correlativo_pc: Optional[int] = Field(default=1)
+    IPP_anterior: Optional[str] = None
+    TPP: Optional[str] = None
+    IPP_posterior: Optional[str] = None
+    tipo_dia: Optional[str] = Field(default=None, sa_column=Column("Tipo de Día", String))
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 class Expedicion(SQLModel, table=True):
@@ -136,8 +138,24 @@ class PuntoControlPO(SQLModel, table=True):
 
 
 def init_db():
-    """Crea las tablas en la base de datos si no existen."""
+    """Crea las tablas en la base de datos si no existen y actualiza esquemas si es necesario."""
     SQLModel.metadata.create_all(engine)
+    
+    # Migración defensiva de columnas para anexo_5
+    import sqlite3
+    db_path = os.path.join("data", "bot_nabla.db")
+    if os.path.exists(db_path):
+        try:
+            con = sqlite3.connect(db_path)
+            cols = [r[1] for r in con.execute("PRAGMA table_info(anexo_5)").fetchall()]
+            if cols and "operador" not in cols:
+                # Recrear tabla vacía con nuevo esquema
+                con.execute("DROP TABLE anexo_5")
+                con.commit()
+            con.close()
+            SQLModel.metadata.create_all(engine)
+        except Exception as e:
+            print(f"⚠️ Error verificando esquema de anexo_5: {e}")
 
 def obtener_estado(chat_id: str) -> Optional[ConversacionState]:
     """Obtiene el estado de la conversación para un chat específico."""

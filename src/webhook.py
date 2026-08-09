@@ -267,8 +267,31 @@ def tarea_generar_reporte_tv(session_id: str, chat_id: str, mes_str: str, anio: 
 
 
 def extraer_archivo_bytes(session_id: str, chat_id: str, message_id: str, data: dict) -> Optional[bytes]:
-    """Extrae el contenido binario de un archivo adjunto enviado por WhatsApp."""
-    # 1. Si viene como Base64 en body o media
+    """Extrae el contenido binario de un archivo adjunto enviado por WhatsApp (compatible con Baileys y whatsapp-web.js)."""
+    # 1. Si viene en el objeto 'media' (estándar en OpenWA / Baileys para documentos)
+    media_obj = data.get("media")
+    if isinstance(media_obj, dict):
+        # 1a. Base64 en media['data'] o media['base64']
+        media_data = media_obj.get("data") or media_obj.get("base64")
+        if media_data and isinstance(media_data, str) and len(media_data) > 50:
+            try:
+                if "base64," in media_data:
+                    media_data = media_data.split("base64,")[1]
+                return base64.b64decode(media_data)
+            except Exception as e:
+                print(f"⚠️ Error decodificando Base64 de media.data: {e}", flush=True)
+                
+        # 1b. URL en media['url'] o media['mediaUrl']
+        m_url = media_obj.get("url") or media_obj.get("mediaUrl")
+        if m_url and isinstance(m_url, str) and m_url.startswith("http"):
+            try:
+                r = http_requests.get(m_url, timeout=60)
+                if r.status_code == 200:
+                    return r.content
+            except Exception as e:
+                print(f"⚠️ Error descargando media.url {m_url}: {e}", flush=True)
+
+    # 2. Si viene como Base64 en body
     body_val = data.get("body")
     if body_val and isinstance(body_val, str):
         if "base64," in body_val:
@@ -283,7 +306,7 @@ def extraer_archivo_bytes(session_id: str, chat_id: str, message_id: str, data: 
             except Exception:
                 pass
                 
-    # 2. Si viene mediaUrl o url
+    # 3. Si viene mediaUrl o url en la raíz de data
     media_url = data.get("mediaUrl") or data.get("url")
     if media_url and isinstance(media_url, str) and media_url.startswith("http"):
         try:
@@ -291,9 +314,9 @@ def extraer_archivo_bytes(session_id: str, chat_id: str, message_id: str, data: 
             if r.status_code == 200:
                 return r.content
         except Exception as e:
-            print(f"⚠️ Error descargando mediaUrl {media_url}: {e}")
+            print(f"⚠️ Error descargando mediaUrl raíz {media_url}: {e}", flush=True)
 
-    # 3. Intentar consultar endpoint /media de OpenWA
+    # 4. Intentar consultar endpoint /media de OpenWA REST API
     if session_id and chat_id and message_id:
         clean_msg_id = str(message_id).replace("/", "%2F")
         clean_chat_id = str(chat_id).replace("/", "%2F")

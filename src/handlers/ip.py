@@ -100,16 +100,27 @@ def a_segundos(valor) -> float:
 
 def clasificar_tipo_dia(fecha) -> str:
     """Clasifica una fecha en 'DL' (Laboral), 'DS' (Sábado) o 'DF' (Domingo/Festivo)."""
-    fecha_dt = pd.Timestamp(fecha).date()
-    if fecha_dt in FERIADOS_CL:
-        return "DF"
+    try:
+        ts = pd.to_datetime(fecha, errors='coerce')
+        if pd.isna(ts):
+            return "DL"
+        fecha_dt = ts.date()
+        year_int = int(fecha_dt.year)
+        if year_int < 2000 or year_int > 2100:
+            return "DL"
+            
+        # Revisar feriados
+        if fecha_dt in FERIADOS_CL:
+            return "DF"
 
-    dow = pd.Timestamp(fecha_dt).dayofweek
-    if dow == 6:
-        return "DF"
-    elif dow == 5:
-        return "DS"
-    else:
+        dow = ts.dayofweek
+        if dow == 6:
+            return "DF"
+        elif dow == 5:
+            return "DS"
+        else:
+            return "DL"
+    except Exception:
         return "DL"
 
 
@@ -682,7 +693,41 @@ def generar_resumen_whatsapp(
     return msg
 
 
-# --- ORQUESTADOR PRINCIPAL DEL CÁLCULO ---
+# --- ORQUESTADOR PRINCIPAL DEL CÁLCULO DESDE SQLITE ---
+
+def obtener_expediciones_ip_db(empresa: str, anio: int, mes: int) -> pd.DataFrame:
+    """Extrae las expediciones registradas en la base de datos SQLite."""
+    from database import engine
+    operador_clean = empresa.lower().strip()
+    if "tasa" in operador_clean:
+        operador_clean = "tasacop"
+        
+    mes_str = f"{mes:02d}"
+    query = f"""
+        SELECT * FROM expediciones 
+        WHERE LOWER(operador) = '{operador_clean}'
+        AND (
+            Fecha LIKE '%-{mes_str}-%' OR Fecha LIKE '%/{mes_str}/%' OR
+            "Inicio Expedicion" LIKE '%-{mes_str}-%' OR "Inicio Expedicion" LIKE '%/{mes_str}/%' OR
+            strftime('%m', "Inicio Expedicion") = '{mes_str}' OR
+            strftime('%m', Fecha) = '{mes_str}'
+        )
+    """
+    df = pd.read_sql_query(query, engine)
+    return df
+
+
+def obtener_lpp_db(empresa: str) -> pd.DataFrame:
+    """Extrae la Lista de Pasadas Programadas (LPP) del Anexo 5 desde SQLite."""
+    from database import engine
+    operador_clean = empresa.lower().strip()
+    if "tasa" in operador_clean:
+        operador_clean = "tasacop"
+        
+    query = f"SELECT * FROM anexo_5 WHERE LOWER(operador) = '{operador_clean}'"
+    df = pd.read_sql_query(query, engine)
+    return df
+
 
 def ejecutar_calculo_ip(
     empresa: str,
@@ -693,6 +738,7 @@ def ejecutar_calculo_ip(
 ) -> Tuple[bytes, str, str]:
     """
     Ejecuta el cálculo completo del Indicador de Puntualidad (IP) para una empresa, año y mes.
+    Lee 100% directamente desde la base de datos SQLite (data/bot_nabla.db).
 
     Retorna:
     --------
@@ -701,15 +747,6 @@ def ejecutar_calculo_ip(
     empresa_clean = empresa.lower().strip()
     if "tasa" in empresa_clean:
         empresa_clean = "tasacop"
-
-    if data_dir is None:
-        data_dir = Path("data")
-    else:
-        data_dir = Path(data_dir)
-
-    empresa_dir = data_dir / empresa_clean
-    if not empresa_dir.exists() or not empresa_dir.is_dir():
-        raise FileNotFoundError(f"No se encontró el directorio de datos para la empresa '{empresa_clean}' en {data_dir}")
 
     mes_nombre = None
     mes_abbr = f"{mes:02d}"
@@ -722,56 +759,95 @@ def ejecutar_calculo_ip(
     if mes_nombre is None:
         mes_nombre = f"Mes{mes:02d}"
 
-    # 1. Buscar A5 vigente para la fecha consultada
-    anchor_fecha = datetime.date(anio, mes, 1)
-    a5_path = buscar_a5_para_fecha(
-        empresa_dir, anchor_fecha, estacionalidades_validas=ESTACIONALIDADES_VALIDAS_IP
-    )
+    # 1. Cargar expediciones directamente desde la base de datos SQLite
+    df_exp_raw = obtener_expediciones_ip_db(empresa_clean, anio, mes)
+    
+    # Fallback a disco solo si existiera directorio
+    if df_exp_raw.empty and data_dir:
+        empresa_dir = Path(data_dir) / empresa_clean
+        if empresa_dir.exists():
+            exp_path = buscar_archivo_expediciones(empresa_dir, mes_num=mes, anio_num=anio)
+            if exp_path:
+                df_exp_raw = pd.read_excel(exp_path) if exp_path.suffix == ".xlsx" else pd.read_html(exp_path)[0]
 
-    # 2. Buscar archivo de expediciones
-    expediciones_path = buscar_archivo_expediciones(empresa_dir, mes_num=mes, anio_num=anio)
-    if not expediciones_path:
+    if df_exp_raw.empty:
         raise FileNotFoundError(
-            f"No se encontró archivo de expediciones para {empresa_clean.upper()} en {mes_nombre} {anio} dentro de {empresa_dir}"
+            f"No se encontraron expediciones registradas en SQLite para {empresa_clean.upper()} en {mes_nombre} {anio}."
         )
 
-    # 3. Cargar datos
-    df_a5 = cargar_lpp(a5_path)
-    df_expediciones = cargar_lpo(expediciones_path, formato="auto")
+    # 2. Cargar Anexo 5 (LPP) directamente desde la base de datos SQLite
+    df_a5_raw = obtener_lpp_db(empresa_clean)
+    
+    # Fallback a disco solo si existiera archivo en data
+    if df_a5_raw.empty and data_dir:
+        empresa_dir = Path(data_dir) / empresa_clean
+        if empresa_dir.exists():
+            anchor_fecha = datetime.date(anio, mes, 1)
+            try:
+                a5_path = buscar_a5_para_fecha(empresa_dir, anchor_fecha)
+                df_a5_raw = cargar_lpp(a5_path)
+            except Exception:
+                pass
+
+    if df_a5_raw.empty:
+        raise FileNotFoundError(
+            f"No se encontraron datos del Anexo 5 (LPP) en la base de datos SQLite para {empresa_clean.upper()}.\n\n"
+            f"💡 Por favor cárgalo primero con el comando:\n`!actualizar a5 {empresa_clean}` (adjuntando el archivo Excel del PO A5)."
+        )
+
+    # 3. Preparar LPP
+    df_a5 = df_a5_raw.copy()
+    renombres_a5 = {
+        "Tipo de Día": "tipo_dia",
+        "Tipo de Dia": "tipo_dia",
+        "Hora programada": "TPP",
+        "Anterior": "IPP_anterior",
+        "Posterior": "IPP_posterior",
+    }
+    for c_orig, c_dest in renombres_a5.items():
+        if c_orig in df_a5.columns and c_dest not in df_a5.columns:
+            df_a5[c_dest] = df_a5[c_orig]
+
+    # Normalizar valores de tipo_dia (ej: DL, DS, DF)
+    if "tipo_dia" in df_a5.columns:
+        df_a5["tipo_dia"] = df_a5["tipo_dia"].astype(str).str.strip().str.upper()
+
+    for col in ["IPP_anterior", "TPP", "IPP_posterior"]:
+        if col in df_a5.columns:
+            df_a5[col + "_seg"] = df_a5[col].apply(a_segundos)
+
+    # 4. Limpiar y procesar LPO (Expediciones)
+    df_expediciones = _limpiar_expediciones(df_exp_raw)
     df_lpo = construir_lpo_largo(df_expediciones)
 
-    # 4. Calcular resultados
+    # 5. Calcular resultados del IP
     fechas = df_expediciones["fecha"].unique()
     df_resultados = calcular_resultados(df_a5, df_lpo, fechas)
 
     if df_resultados.empty:
         raise ValueError(
             f"No se generaron resultados para {empresa_clean.upper()} en {mes_nombre} {anio}. "
-            f"Verifica el cruce de Servicios, Sentidos y Puntos de Control entre el A5 y las expediciones."
+            f"Verifica el cruce de Servicios, Sentidos y Puntos de Control entre el A5 y las expediciones en la base de datos."
         )
 
-    # 5. Construir resumen y generar Excel
+    # 6. Construir resumen y generar Excel binario
     df_resumen = construir_resumen_por_servicio(df_resultados)
     excel_bytes = generar_excel_bytes_ip(df_resultados)
 
-    # 6. Guardar copia en disco en carpeta salidas
-    if salida_dir is None:
-        salida_dir = Path("salidas")
-    else:
-        salida_dir = Path(salida_dir)
-    salida_dir.mkdir(parents=True, exist_ok=True)
-
     anio_2d = anio % 100
     filename = f"reporte_IP_{empresa_clean.upper()}_{mes_nombre}{anio_2d}.xlsx"
-    out_path = salida_dir / filename
-    with open(out_path, "wb") as f:
+
+    # Guardar copia opcional en carpeta salidas
+    salida_path = Path("salidas")
+    salida_path.mkdir(parents=True, exist_ok=True)
+    with open(salida_path / filename, "wb") as f:
         f.write(excel_bytes)
 
     resumen_txt = generar_resumen_whatsapp(
         empresa=empresa_clean,
         mes_nombre=mes_nombre,
         anio=anio,
-        a5_nombre=a5_path.name,
+        a5_nombre="Base de Datos SQLite (LPP)",
         df_resultados=df_resultados,
         df_resumen=df_resumen,
     )
