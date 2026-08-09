@@ -1,0 +1,207 @@
+import os
+import io
+import tempfile
+import pandas as pd
+import openpyxl
+from typing import Dict, Any, List, Optional
+from sqlalchemy import text
+from sqlmodel import Session
+from database import engine, Anexo1, PuntoControlPO, Anexo5Record
+
+
+def limpiar_nan(val: Any) -> Optional[Any]:
+    if pd.isna(val) or val is None or str(val).strip().lower() in ("nan", "nat", ""):
+        return None
+    return val
+
+
+def actualizar_anexo_1_desde_bytes(excel_bytes: bytes, operador: str) -> Dict[str, Any]:
+    """
+    Parsea y actualiza el Anexo 1 (Frecuencias) para una empresa/operador específico,
+    sobreescribiendo los registros existentes en la tabla 'anexo_1' de SQLite.
+    """
+    operador_clean = operador.strip().lower()
+    
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        tmp.write(excel_bytes)
+        tmp_path = tmp.name
+        
+    try:
+        xl = pd.ExcelFile(tmp_path)
+        sheet_names = [s for s in xl.sheet_names if s not in ('TAPA', 'Servicios', 'Resumen')]
+        
+        records_to_add: List[Anexo1] = []
+        servicios_set = set()
+        
+        for sheet_name in sheet_names:
+            try:
+                df = pd.read_excel(tmp_path, sheet_name=sheet_name, header=None)
+                if len(df) < 15:
+                    continue
+                    
+                # Extraer metadatos del servicio y sentido
+                servicio = str(df.iloc[6, 1]).strip()
+                sentido = str(df.iloc[6, 2]).strip()
+                servicios_set.add(f"{servicio}_{sentido}")
+                
+                # Recorrer periodos (Filas 12 a 35 habitualmente en PO A1)
+                max_r = min(len(df), 36)
+                for r_idx in range(12, max_r):
+                    periodo_val = df.iloc[r_idx, 1]
+                    if pd.isna(periodo_val):
+                        continue
+                    try:
+                        periodo = int(periodo_val)
+                    except Exception:
+                        continue
+                        
+                    horario = str(df.iloc[r_idx, 2]).strip()
+                    
+                    dias_config = [
+                        ("Laboral", 3, 4),
+                        ("Sábado", 5, 6),
+                        ("Domingo / Festivo", 7, 8)
+                    ]
+                    
+                    for tipo_dia, td_col, freq_col in dias_config:
+                        if td_col < len(df.columns) and freq_col < len(df.columns):
+                            td_val = limpiar_nan(df.iloc[r_idx, td_col])
+                            freq_val = limpiar_nan(df.iloc[r_idx, freq_col])
+                            
+                            if td_val is not None or freq_val is not None:
+                                try:
+                                    freq_esperada = float(freq_val) if freq_val is not None else None
+                                except Exception:
+                                    freq_esperada = None
+                                    
+                                record = Anexo1(
+                                    operador=operador_clean,
+                                    servicio=servicio,
+                                    sentido=sentido,
+                                    periodo=periodo,
+                                    horario=horario,
+                                    tipo_dia=tipo_dia,
+                                    tipo_demanda=str(td_val) if td_val is not None else None,
+                                    frecuencia_esperada=freq_esperada
+                                )
+                                records_to_add.append(record)
+            except Exception as e:
+                print(f"⚠️ Error procesando hoja '{sheet_name}' de Anexo 1: {e}")
+                
+        if not records_to_add:
+            return {
+                "success": False,
+                "error": "No se encontraron tablas válidas de frecuencias en las hojas del archivo."
+            }
+            
+        # Sobreescribir en la base de datos SQLite
+        with Session(engine) as session:
+            session.execute(text(f"DELETE FROM anexo_1 WHERE LOWER(operador) = '{operador_clean}'"))
+            session.add_all(records_to_add)
+            session.commit()
+            
+        # Guardar respaldo en disco
+        backup_dir = os.path.join("data", operador_clean)
+        os.makedirs(backup_dir, exist_ok=True)
+        backup_path = os.path.join(backup_dir, f"PO_A1_{operador_clean}.xlsx")
+        with open(backup_path, "wb") as f:
+            f.write(excel_bytes)
+            
+        xl.close()
+        return {
+            "success": True,
+            "tipo": "A1",
+            "operador": operador_clean,
+            "total_registros": len(records_to_add),
+            "servicios_actualizados": len(servicios_set),
+            "backup_path": backup_path
+        }
+        
+    finally:
+        try:
+            if 'xl' in locals():
+                xl.close()
+        except Exception:
+            pass
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+
+def actualizar_anexo_5_desde_bytes(excel_bytes: bytes, operador: str) -> Dict[str, Any]:
+    """
+    Parsea y actualiza el Anexo 5 (Puntos de Control / PO A5) para una empresa/operador específico,
+    sobreescribiendo los registros existentes en la tabla 'puntos_control_po' (y opcionalmente 'anexo_5').
+    """
+    operador_clean = operador.strip().lower()
+    
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        tmp.write(excel_bytes)
+        tmp_path = tmp.name
+        
+    try:
+        wb = openpyxl.load_workbook(tmp_path, read_only=True)
+        sheet_names = wb.sheetnames
+        wb.close()
+        
+        records_pc: List[PuntoControlPO] = []
+        servicios_set = set()
+        
+        # 1. Si contiene la hoja oficial 'PC' (Puntos de Control y distancias geodésicas)
+        if "PC" in sheet_names:
+            from handlers.velocidades import load_sheet_with_dynamic_header
+            df_pc = load_sheet_with_dynamic_header(tmp_path, "PC")
+            
+            df_pc['Distancia al origen'] = pd.to_numeric(df_pc['Distancia al origen'], errors='coerce')
+            df_pc['Correlativo Punto de Control'] = pd.to_numeric(df_pc['Correlativo Punto de Control'], errors='coerce')
+            df_pc['Sentido'] = pd.to_numeric(df_pc['Sentido'], errors='coerce')
+            
+            df_clean = df_pc.dropna(subset=['Servicio', 'Sentido', 'Correlativo Punto de Control', 'Distancia al origen'])
+            
+            for _, row in df_clean.iterrows():
+                serv_str = str(row['Servicio']).strip()
+                sentido_int = int(row['Sentido'])
+                servicios_set.add(f"{serv_str}_{sentido_int}")
+                
+                record = PuntoControlPO(
+                    operador=operador_clean,
+                    servicio=serv_str,
+                    sentido=sentido_int,
+                    correlativo=int(row['Correlativo Punto de Control']),
+                    distancia_origen=float(row['Distancia al origen'])
+                )
+                records_pc.append(record)
+
+        if not records_pc:
+            return {
+                "success": False,
+                "error": "No se encontró la hoja 'PC' con columnas de Servicio, Sentido, Correlativo y Distancia."
+            }
+            
+        # Sobreescribir en la base de datos SQLite
+        with Session(engine) as session:
+            session.execute(text(f"DELETE FROM puntos_control_po WHERE LOWER(operador) = '{operador_clean}'"))
+            session.add_all(records_pc)
+            session.commit()
+            
+        # Guardar respaldo en disco
+        backup_dir = os.path.join("data", operador_clean)
+        os.makedirs(backup_dir, exist_ok=True)
+        backup_path = os.path.join(backup_dir, f"PO_A5_{operador_clean}.xlsx")
+        with open(backup_path, "wb") as f:
+            f.write(excel_bytes)
+            
+        return {
+            "success": True,
+            "tipo": "A5",
+            "operador": operador_clean,
+            "total_puntos_control": len(records_pc),
+            "variantes_actualizadas": len(servicios_set),
+            "backup_path": backup_path
+        }
+        
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)

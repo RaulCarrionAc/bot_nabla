@@ -21,10 +21,15 @@ El sistema almacena toda la información de forma persistente y estructurada en 
 ```
 bot_nabla/
 ├── data/                       # Base de datos SQLite y archivos de datos crudos (ignorado en git)
+│   ├── tasacop/                # Expediciones y archivos PO A5 / A1 de Tasacoop
+│   └── templates/              # Plantillas OpenXML (template_speeds.xlsx)
 ├── src/                        # Código fuente del bot y webhook
 │   ├── handlers/
 │   │   ├── icf.py              # Motor de cálculo y proyecciones del ICF (Stochastic / Ideal)
-│   │   └── puntualidad.py      # Motor de cálculo del indicador de puntualidad
+│   │   ├── puntualidad.py      # Motor de cálculo del indicador de puntualidad
+│   │   └── velocidades.py      # Motor de análisis cinemático, tiempos de viaje y velocidades PO A5
+│   ├── generators/
+│   │   └── excel_speeds.py     # Generador OpenXML de libros Excel con actualización de Pivot Caches
 │   ├── database.py             # Definición de esquemas de SQLModel y helpers de BD
 │   ├── descargar_datos.py      # Script de descarga y sincronización automatizada de datos (Playwright/Requests)
 │   ├── importar_datos.py       # Script de migración masiva inicial desde archivos Excel/HTML

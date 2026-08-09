@@ -123,6 +123,17 @@ class UsuarioPermitido(SQLModel, table=True):
     celular: str = Field(primary_key=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
+class PuntoControlPO(SQLModel, table=True):
+    __tablename__ = "puntos_control_po"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    operador: str = Field(default="tasacop", index=True)
+    servicio: str = Field(index=True)
+    sentido: int = Field(description="0: Ida, 1: Regreso")
+    correlativo: int = Field(description="1 a 22")
+    distancia_origen: float = Field(description="Distancia en metros al origen")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
 
 def init_db():
     """Crea las tablas en la base de datos si no existen."""

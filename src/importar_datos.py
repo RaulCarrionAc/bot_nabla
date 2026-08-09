@@ -210,6 +210,62 @@ def importar_expediciones(file_path: str):
     else:
         print("⚠️ No se encontraron expediciones válidas.")
 
+def importar_po_a5_pc(file_path: str, operador: str = "tasacop"):
+    """Importa los Puntos de Control y distancias de la hoja 'PC' del PO A5 a la tabla puntos_control_po en SQLite."""
+    from database import PuntoControlPO
+    print(f"📥 Importando Puntos de Control PO A5 desde: {file_path} (Operador: {operador})...")
+    
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(file_path, read_only=True)
+        if "PC" not in wb.sheetnames:
+            print(f"⚠️ La hoja 'PC' no se encuentra en {file_path}")
+            wb.close()
+            return
+            
+        ws = wb["PC"]
+        rows = list(ws.iter_rows(values_only=True))
+        wb.close()
+        
+        header_row_idx = 0
+        for idx, r in enumerate(rows):
+            if r and any(x is not None and str(x).strip().lower() == 'servicio' for x in r):
+                header_row_idx = idx
+                break
+                
+        headers = [str(h).strip() if h is not None else f"Col{i}" for i, h in enumerate(rows[header_row_idx])]
+        df_pc = pd.DataFrame(rows[header_row_idx+1:], columns=headers)
+        
+        df_pc['Distancia al origen'] = pd.to_numeric(df_pc['Distancia al origen'], errors='coerce')
+        df_pc['Correlativo Punto de Control'] = pd.to_numeric(df_pc['Correlativo Punto de Control'], errors='coerce')
+        df_pc['Sentido'] = pd.to_numeric(df_pc['Sentido'], errors='coerce')
+        
+        df_clean = df_pc.dropna(subset=['Servicio', 'Sentido', 'Correlativo Punto de Control', 'Distancia al origen'])
+        
+        records = []
+        for _, row in df_clean.iterrows():
+            record = PuntoControlPO(
+                operador=operador,
+                servicio=str(row['Servicio']).strip(),
+                sentido=int(row['Sentido']),
+                correlativo=int(row['Correlativo Punto de Control']),
+                distancia_origen=float(row['Distancia al origen'])
+            )
+            records.append(record)
+            
+        if records:
+            from sqlalchemy import text
+            with Session(engine) as session:
+                session.execute(text(f"DELETE FROM puntos_control_po WHERE operador = '{operador}'"))
+                session.add_all(records)
+                session.commit()
+            print(f"✅ Se importaron {len(records)} puntos de control PO A5 a SQLite.")
+        else:
+            print("⚠️ No se encontraron registros válidos de puntos de control en la hoja PC.")
+            
+    except Exception as e:
+        print(f"❌ Error importando PC del PO A5: {e}")
+
 def main():
     print("🚀 Iniciando importación de datos en SQLite...")
     # Asegurar que las tablas están creadas
@@ -220,8 +276,9 @@ def main():
     with Session(engine) as session:
         session.execute(text("DELETE FROM expediciones"))
         session.execute(text("DELETE FROM anexo_1"))
+        session.execute(text("DELETE FROM puntos_control_po"))
         session.commit()
-    print("🧹 Tablas 'expediciones' y 'anexo_1' limpiadas con éxito.")
+    print("🧹 Tablas 'expediciones', 'anexo_1' y 'puntos_control_po' limpiadas con éxito.")
     
     # 1. Buscar y procesar Anexos 1
     anexo_files = glob.glob("data/**/*A1_*.xlsx", recursive=True)
@@ -229,8 +286,14 @@ def main():
     for f in anexo_files:
         importar_anexo1(f)
         
-    # 2. Buscar y procesar Expediciones
-    # Cambiamos el patrón glob para que incluya .xlsx y archivos sin prefijo de operador
+    # 2. Buscar y procesar PO A5 (Puntos de control PC)
+    po_a5_files = glob.glob("data/**/*A5*.xlsx", recursive=True)
+    print(f"\nSe encontraron {len(po_a5_files)} archivos de PO A5.")
+    for f in po_a5_files:
+        op = get_operador(f)
+        importar_po_a5_pc(f, operador=op if op != "desconocido" else "tasacop")
+        
+    # 3. Buscar y procesar Expediciones
     exp_files = glob.glob("data/**/*expediciones*.xls*", recursive=True)
     print(f"\nSe encontraron {len(exp_files)} archivos de expediciones.")
     for f in exp_files:

@@ -83,6 +83,19 @@ def health_check():
     return {"status": "ok"}
 
 
+@app.get("/download/{filename}")
+def download_archivo(filename: str):
+    from fastapi.responses import FileResponse
+    file_path = os.path.join("salidas", filename)
+    if os.path.exists(file_path):
+        return FileResponse(
+            file_path,
+            filename=filename,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    return {"error": f"Archivo '{filename}' no encontrado"}
+
+
 OPENWA_URL = os.getenv("URL", "http://openwa-api:2785")
 OPENWA_KEY = os.getenv("API-KEY")
 
@@ -166,6 +179,177 @@ def tarea_calcular_icf(session_id: str, chat_id: str, operador: str, anio: int, 
         enviar_mensaje(session_id, chat_id, f"❌ Error calculando ICF: Asegúrate de que las frecuencias y expediciones estén cargadas para la fecha indicada.")
 
 
+def tarea_generar_reporte_tv(session_id: str, chat_id: str, mes_str: str, anio: int):
+    try:
+        from handlers.velocidades import (
+            procesar_modelo_cinematico, 
+            buscar_archivo_expediciones_tasacop, 
+            MESES_MAP,
+            DEFAULT_PO_A5_PATH
+        )
+        from generators.excel_speeds import generar_libro_excel_velocidades
+        import pandas as pd
+
+        session_id = session_id or obtener_session_id_activo()
+        mes_info = MESES_MAP.get(mes_str.lower().strip())
+        if not mes_info:
+            if session_id:
+                enviar_mensaje(session_id, chat_id, f"❌ Mes '{mes_str}' no reconocido. Ejemplos válidos: `mayo`, `junio`, `julio`.")
+            return
+
+        mes_num, mes_abbr, mes_nombre = mes_info
+        print(f"⏳ [DEBUG] Iniciando generación de reporte cinemático para Tasacop: {mes_nombre} {anio} (session: {session_id})", flush=True)
+
+        # 1. Intentar cargar expediciones directamente desde la base de datos SQLite
+        from handlers.velocidades import obtener_expediciones_tasacop_mes_db
+        df_in = obtener_expediciones_tasacop_mes_db(mes_num, anio)
+
+        # 2. Si no está en SQLite, intentar fallback a archivo Excel en disco
+        if df_in is None or df_in.empty:
+            in_file = buscar_archivo_expediciones_tasacop(mes_str, anio)
+            if in_file and os.path.exists(in_file):
+                df_in = pd.read_excel(in_file)
+            else:
+                enviar_mensaje(
+                    session_id, 
+                    chat_id, 
+                    f"⚠️ No se encontraron expediciones registradas para Tasacoop en *{mes_nombre} {anio}* (ni en SQLite ni en disco)."
+                )
+                return
+
+        df_datos, df_desref, df_params, metrics = procesar_modelo_cinematico(
+            df_in, 
+            po_a5_path=DEFAULT_PO_A5_PATH,
+            operador="tasacop"
+        )
+
+        out_filename = f"reporte_velocidades_tasacop_{mes_abbr}_{anio}.xlsx"
+        out_dir = os.path.join("salidas")
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, out_filename)
+
+        _, raw_bytes = generar_libro_excel_velocidades(df_datos, df_desref, df_params, out_path)
+
+        resumen_txt = (
+            f"📊 *Reporte Cinemático de Velocidades y Tiempos de Viaje (PO A5)*\n\n"
+            f"🏢 *Operador*: Tasacoop\n"
+            f"📅 *Período*: {mes_nombre} {anio}\n"
+            f"🚌 *Total Expediciones*: {metrics['total_expediciones']:,}\n"
+            f"✅ *Expediciones en Muestra*: {metrics['total_muestra']:,} ({metrics['pct_muestra']:.1f}%)\n"
+            f"⚡ *Velocidad Promedio Global*: {metrics['vel_promedio']:.2f} km/h\n\n"
+            f"📎 _Adjunto libro Excel con Tablas Dinámicas y Tramos Descompuestos (desref)._"
+        )
+
+        enviar_mensaje(session_id, chat_id, resumen_txt)
+        enviar_documento(session_id, chat_id, raw_bytes, out_filename)
+        print(f"✅ [DEBUG] Reporte cinemático enviado exitosamente a {chat_id}", flush=True)
+
+    except Exception as e:
+        print(f"❌ [DEBUG] Error generando reporte de velocidades: {e}", flush=True)
+        enviar_mensaje(session_id, chat_id, f"❌ Ocurrió un error al generar el reporte de velocidades: {e}")
+
+
+def extraer_archivo_bytes(session_id: str, chat_id: str, message_id: str, data: dict) -> Optional[bytes]:
+    """Extrae el contenido binario de un archivo adjunto enviado por WhatsApp."""
+    # 1. Si viene como Base64 en body o media
+    body_val = data.get("body")
+    if body_val and isinstance(body_val, str):
+        if "base64," in body_val:
+            try:
+                b64_clean = body_val.split("base64,")[1]
+                return base64.b64decode(b64_clean)
+            except Exception:
+                pass
+        elif len(body_val) > 200 and not body_val.startswith("!"):
+            try:
+                return base64.b64decode(body_val)
+            except Exception:
+                pass
+                
+    # 2. Si viene mediaUrl o url
+    media_url = data.get("mediaUrl") or data.get("url")
+    if media_url and isinstance(media_url, str) and media_url.startswith("http"):
+        try:
+            r = http_requests.get(media_url, timeout=60)
+            if r.status_code == 200:
+                return r.content
+        except Exception as e:
+            print(f"⚠️ Error descargando mediaUrl {media_url}: {e}")
+
+    # 3. Intentar consultar endpoint /media de OpenWA
+    if session_id and chat_id and message_id:
+        clean_msg_id = str(message_id).replace("/", "%2F")
+        clean_chat_id = str(chat_id).replace("/", "%2F")
+        try:
+            r = http_requests.get(
+                f"{OPENWA_URL}/api/sessions/{session_id}/messages/{clean_chat_id}/{clean_msg_id}/media",
+                headers={"x-api-key": OPENWA_KEY},
+                timeout=60
+            )
+            if r.status_code == 200:
+                return r.content
+        except Exception:
+            pass
+
+        try:
+            r = http_requests.get(
+                f"{OPENWA_URL}/api/sessions/{session_id}/messages/{clean_msg_id}/media",
+                headers={"x-api-key": OPENWA_KEY},
+                timeout=60
+            )
+            if r.status_code == 200:
+                return r.content
+        except Exception:
+            pass
+
+    return None
+
+
+def tarea_actualizar_anexo(session_id: str, chat_id: str, tipo_anexo: str, empresa: str, archivo_bytes: bytes):
+    """Ejecuta en segundo plano la actualización y sobreescritura de Anexos A1 o A5 en SQLite."""
+    try:
+        session_id = session_id or obtener_session_id_activo()
+        from handlers.actualizar_anexos import actualizar_anexo_1_desde_bytes, actualizar_anexo_5_desde_bytes
+        
+        tipo_clean = tipo_anexo.lower().strip()
+        empresa_clean = empresa.lower().strip()
+        
+        if tipo_clean in ("a1", "anexo1", "anexo_1", "1"):
+            res = actualizar_anexo_1_desde_bytes(archivo_bytes, empresa_clean)
+            if res.get("success"):
+                msg = (
+                    f"✅ *Actualización Exitosa de Anexo A1*\n\n"
+                    f"🏢 *Empresa*: {empresa_clean.upper()}\n"
+                    f"📊 *Registros de Frecuencia Insertados*: {res['total_registros']}\n"
+                    f"🚌 *Servicios/Variantes Actualizados*: {res['servicios_actualizados']}\n\n"
+                    f"💾 _Base de datos SQLite actualizada y sobreescrita correctamente._"
+                )
+            else:
+                msg = f"❌ *Error al actualizar Anexo A1 ({empresa_clean.upper()})*:\n\n{res.get('error')}"
+                
+        elif tipo_clean in ("a5", "anexo5", "anexo_5", "5"):
+            res = actualizar_anexo_5_desde_bytes(archivo_bytes, empresa_clean)
+            if res.get("success"):
+                msg = (
+                    f"✅ *Actualización Exitosa de Anexo A5 (PO)*\n\n"
+                    f"🏢 *Empresa*: {empresa_clean.upper()}\n"
+                    f"📍 *Puntos de Control Oficiales*: {res['total_puntos_control']}\n"
+                    f"🚌 *Variantes Actualizadas*: {res['variantes_actualizadas']}\n\n"
+                    f"💾 _Trazados y distancias en SQLite sobreescritos con éxito._"
+                )
+            else:
+                msg = f"❌ *Error al actualizar Anexo A5 ({empresa_clean.upper()})*:\n\n{res.get('error')}"
+        else:
+            msg = f"❌ Tipo de anexo '{tipo_anexo}' no reconocido. Usa `A1` (frecuencias) o `A5` (puntos de control)."
+            
+        enviar_mensaje(session_id, chat_id, msg)
+        
+    except Exception as e:
+        print(f"❌ Error actualizando anexo en segundo plano: {e}", flush=True)
+        if session_id:
+            enviar_mensaje(session_id, chat_id, f"❌ Ocurrió un error al actualizar el anexo: {e}")
+
+
 async def planificador_descargas():
     """Planifica y ejecuta la descarga diaria de datos a las 06:30 AM hora de Chile."""
     import asyncio
@@ -237,7 +421,8 @@ def enviar_mensaje(session_id: str, chat_id: str, texto: str) -> bool:
         r = http_requests.post(
             f"{OPENWA_URL}/api/sessions/{session_id}/messages/send-text",
             json={"chatId": chat_id, "text": texto},
-            headers={"x-api-key": OPENWA_KEY}
+            headers={"x-api-key": OPENWA_KEY},
+            timeout=30
         )
         if r.status_code in (200, 201):
             return True
@@ -249,6 +434,32 @@ def enviar_mensaje(session_id: str, chat_id: str, texto: str) -> bool:
 
 
 def enviar_documento(session_id: str, chat_id: str, archivo_bytes: bytes, filename: str) -> bool:
+    print(f"📤 Enviando documento '{filename}' ({len(archivo_bytes)/1024/1024:.2f} MB) a {chat_id}...", flush=True)
+    
+    # 1. Para archivos grandes (> 3 MB), enviar via URL interna de Docker para evitar que Puppeteer
+    # crashee con TargetCloseError por límites de memoria/IPC al evaluar strings gigantes en Base64
+    if len(archivo_bytes) > 3 * 1024 * 1024:
+        download_url = f"http://nabla-webhook:8000/download/{filename}"
+        try:
+            print(f"🔗 Enviando mediante streaming URL interna de Docker: {download_url}", flush=True)
+            r = http_requests.post(
+                f"{OPENWA_URL}/api/sessions/{session_id}/messages/send-document",
+                json={
+                    "chatId": chat_id,
+                    "url": download_url,
+                    "filename": filename,
+                },
+                headers={"x-api-key": OPENWA_KEY},
+                timeout=180
+            )
+            if r.status_code in (200, 201):
+                print(f"✅ Documento '{filename}' enviado con éxito vía streaming a {chat_id}.", flush=True)
+                return True
+            print(f"⚠️ Falló envío vía URL (Status: {r.status_code} - {r.text}). Intentando fallback Base64...", flush=True)
+        except Exception as e:
+            print(f"⚠️ Excepción al enviar vía URL: {e}. Intentando fallback Base64...", flush=True)
+
+    # 2. Envío mediante Base64 (estándar para archivos medianos o fallback)
     b64 = base64.b64encode(archivo_bytes).decode()
     try:
         r = http_requests.post(
@@ -259,9 +470,11 @@ def enviar_documento(session_id: str, chat_id: str, archivo_bytes: bytes, filena
                 "mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 "filename": filename,
             },
-            headers={"x-api-key": OPENWA_KEY}
+            headers={"x-api-key": OPENWA_KEY},
+            timeout=180
         )
         if r.status_code in (200, 201):
+            print(f"✅ Documento '{filename}' enviado con éxito a {chat_id}.", flush=True)
             return True
         print(f"❌ Error enviando documento. Status: {r.status_code} - {r.text}", flush=True)
         return False
@@ -277,7 +490,7 @@ async def recibir_evento(request: Request, background_tasks: BackgroundTasks):
     print(f"🔔 [DEBUG] Data completa: {evento.get('data')}", flush=True)
 
     data = evento.get("data", {})
-    session_id = evento.get("sessionId")
+    session_id = evento.get("sessionId") or data.get("sessionId") or obtener_session_id_activo()
     chat_id = data.get("chatId")
     from_me = data.get("fromMe", False)
     cuerpo = str(data.get("body") or "").strip().lower()
@@ -298,7 +511,7 @@ async def recibir_evento(request: Request, background_tasks: BackgroundTasks):
     es_permitido = es_admin or es_usuario_permitido(sender_clean)
 
     # Validar si el mensaje es un comando del bot
-    comandos_validos = ("!actualizar", "!puntualidad", "!icf", "!permisos")
+    comandos_validos = ("!actualizar", "!puntualidad", "!icf", "!permisos", "!reporte_tv", "!reporte_velocidad", "!velocidades")
     es_comando = any(cuerpo.startswith(cmd) for cmd in comandos_validos)
 
     if es_comando:
@@ -421,7 +634,55 @@ async def recibir_evento(request: Request, background_tasks: BackgroundTasks):
             return {"status": "ok"}
 
     # Comando !actualizar
-    if "!actualizar" in cuerpo:
+    if cuerpo.startswith("!actualizar"):
+        import re
+        parts = re.split(r'\s+', cuerpo)
+        
+        tipo_anexo = None
+        empresa = None
+        
+        for p in parts[1:]:
+            p_clean = p.strip().lower()
+            if p_clean in ("a1", "anexo1", "anexo_1", "1"):
+                tipo_anexo = "A1"
+            elif p_clean in ("a5", "anexo5", "anexo_5", "5"):
+                tipo_anexo = "A5"
+            elif p_clean in ("tasacop", "tasacoop", "lider", "toptur"):
+                empresa = "tasacop" if "tasa" in p_clean else p_clean
+
+        # Caso A: Actualización de Anexo (A1 o A5)
+        if tipo_anexo or empresa:
+            if not tipo_anexo or not empresa:
+                enviar_mensaje(
+                    session_id, 
+                    chat_id, 
+                    "❌ Por favor especifica el tipo de anexo (`A1` o `A5`) y la empresa (`tasacop`, `lider`, `toptur`).\n\n"
+                    "💡 *Ejemplo*: `!actualizar A1 tasacop` o `!actualizar A5 lider` (adjuntando el archivo Excel o enviándolo a continuación)."
+                )
+                return {"status": "ok"}
+                
+            # Intentar extraer archivo adjunto en este mismo mensaje
+            message_id = data.get("id")
+            archivo_bytes = extraer_archivo_bytes(session_id, chat_id, message_id, data)
+            
+            if archivo_bytes:
+                enviar_mensaje(
+                    session_id, 
+                    chat_id, 
+                    f"⏳ Procesando y sobreescribiendo *Anexo {tipo_anexo}* para *{empresa.upper()}* en SQLite..."
+                )
+                background_tasks.add_task(tarea_actualizar_anexo, session_id, chat_id, tipo_anexo, empresa, archivo_bytes)
+            else:
+                guardar_estado(chat_id, estado="esperando_anexo", nombre_operacion=f"{tipo_anexo}_{empresa}")
+                enviar_mensaje(
+                    session_id, 
+                    chat_id, 
+                    f"📥 *Listo para actualizar Anexo {tipo_anexo} ({empresa.upper()})*\n\n"
+                    f"📎 Por favor envía el archivo Excel (`.xlsx` o `.xls`) a continuación en este chat para sobreescribir la base de datos."
+                )
+            return {"status": "ok"}
+
+        # Caso B: Actualización automática periódica de expediciones telemáticas
         print("✅ ¡Comando !actualizar detectado!", flush=True)
         enviar_mensaje(session_id, chat_id, "⏳ Iniciando descarga y actualización de expediciones para todos los operadores en segundo plano. Te avisaré cuando termine...")
         background_tasks.add_task(tarea_actualizar_datos, session_id, chat_id)
@@ -476,10 +737,72 @@ async def recibir_evento(request: Request, background_tasks: BackgroundTasks):
         background_tasks.add_task(tarea_calcular_icf, session_id, chat_id, operador, anio, mes)
         return {"status": "ok"}
 
-    # Ejemplo de uso de persistencia de estado para otros comandos futuros
-    estado = obtener_estado(chat_id)
-    if estado is None:
+    # Comando !reporte_tv / !reporte_velocidad (Tasacoop PO A5)
+    if any(cuerpo.startswith(prefix) for prefix in ("!reporte_tv", "!reporte_velocidad", "!velocidades")):
+        import re
+        from handlers.velocidades import MESES_MAP
+
+        parts = re.split(r'\s+', cuerpo)
+        mes_str = None
+        anio = None
+
+        for part in parts[1:]:
+            p_clean = part.strip().lower()
+            if p_clean in MESES_MAP:
+                mes_str = p_clean
+            elif p_clean.isdigit():
+                val = int(p_clean)
+                if 1 <= val <= 12 and mes_str is None:
+                    # Encontrar nombre de mes por número
+                    for k, v in MESES_MAP.items():
+                        if v[0] == val:
+                            mes_str = k
+                            break
+                elif 2000 <= val <= 2100:
+                    anio = val
+
+        if anio is None:
+            anio = datetime.now().year
+
+        if not mes_str:
+            enviar_mensaje(
+                session_id, 
+                chat_id, 
+                "❌ Por favor especifica el mes a consultar.\n\nEjemplo: `!reporte_tv mayo` o `!reporte_tv junio 2026`.\n\n💡 _Este reporte genera el análisis cinemático de velocidades y tiempos de viaje (PO A5) para Tasacoop._"
+            )
+            return {"status": "ok"}
+
+        mes_nombre = MESES_MAP[mes_str][2]
+        print(f"✅ Comando !reporte_tv detectado: Tasacop, mes={mes_str}, anio={anio}", flush=True)
+        enviar_mensaje(
+            session_id, 
+            chat_id, 
+            f"⏳ Generando reporte cinemático de velocidades y tiempos de viaje para *Tasacoop* ({mes_nombre} {anio})... Esto tomará unos momentos."
+        )
+        background_tasks.add_task(tarea_generar_reporte_tv, session_id, chat_id, mes_str, anio)
         return {"status": "ok"}
+
+    # Manejo de estados conversacionales (ej: recepción de archivo de Anexo pendiente)
+    estado = obtener_estado(chat_id)
+    if estado and estado.estado == "esperando_anexo":
+        message_id = data.get("id")
+        archivo_bytes = extraer_archivo_bytes(session_id, chat_id, message_id, data)
+        
+        if archivo_bytes:
+            op_parts = estado.nombre_operacion.split("_")
+            tipo_anexo = op_parts[0] if len(op_parts) > 0 else "A1"
+            empresa = op_parts[1] if len(op_parts) > 1 else "tasacop"
+            eliminar_estado(chat_id)
+            
+            enviar_mensaje(
+                session_id, 
+                chat_id, 
+                f"⏳ Archivo recibido. Procesando y sobreescribiendo *Anexo {tipo_anexo.upper()}* para *{empresa.upper()}* en SQLite..."
+            )
+            background_tasks.add_task(tarea_actualizar_anexo, session_id, chat_id, tipo_anexo, empresa, archivo_bytes)
+            return {"status": "ok"}
+        else:
+            print("⚠️ Mensaje recibido en estado 'esperando_anexo' sin archivo válido adjunto.", flush=True)
 
     return {"status": "ok"}
 
