@@ -370,12 +370,16 @@ def tarea_actualizar_anexo(session_id: str, chat_id: str, tipo_anexo: str, empre
         elif tipo_clean in ("a5", "anexo5", "anexo_5", "5"):
             res = actualizar_anexo_5_desde_bytes(archivo_bytes, empresa_clean)
             if res.get("success"):
+                pts = res.get('total_puntos_control', 0)
+                lpp = res.get('total_pasadas_lpp', 0)
+                serv = res.get('servicios_actualizados') or res.get('variantes_actualizadas', 0)
                 msg = (
                     f"✅ *Actualización Exitosa de Anexo A5 (PO)*\n\n"
                     f"🏢 *Empresa*: {empresa_clean.upper()}\n"
-                    f"📍 *Puntos de Control Oficiales*: {res['total_puntos_control']}\n"
-                    f"🚌 *Variantes Actualizadas*: {res['variantes_actualizadas']}\n\n"
-                    f"💾 _Trazados y distancias en SQLite sobreescritos con éxito._"
+                    f"📍 *Puntos de Control Oficiales (PC)*: {pts}\n"
+                    f"⏱️ *Pasadas Programadas (LPP)*: {lpp}\n"
+                    f"🚌 *Servicios/Variantes*: {serv}\n\n"
+                    f"💾 _Datos del Anexo 5 en SQLite sobreescritos con éxito._"
                 )
             else:
                 msg = f"❌ *Error al actualizar Anexo A5 ({empresa_clean.upper()})*:\n\n{res.get('error')}"

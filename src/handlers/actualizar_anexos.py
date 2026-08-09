@@ -266,7 +266,8 @@ def actualizar_anexo_5_desde_bytes(excel_bytes: bytes, operador: str) -> Dict[st
             "operador": operador_clean,
             "total_puntos_control": len(records_pc),
             "total_pasadas_lpp": len(records_lpp),
-            "servicios_actualizados": len(servicios_pc_set.union(servicios_lpp_set))
+            "servicios_actualizados": len(servicios_pc_set.union(servicios_lpp_set)),
+            "variantes_actualizadas": len(servicios_pc_set.union(servicios_lpp_set))
         }
         
     finally:
