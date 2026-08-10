@@ -479,52 +479,72 @@ def enviar_mensaje(session_id: str, chat_id: str, texto: str) -> bool:
 
 def enviar_documento(session_id: str, chat_id: str, archivo_bytes: bytes, filename: str) -> bool:
     print(f"📤 Enviando documento '{filename}' ({len(archivo_bytes)/1024/1024:.2f} MB) a {chat_id}...", flush=True)
+    mimetype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     
-    # 1. Para archivos grandes (> 3 MB), enviar via URL interna de Docker para evitar que Puppeteer
-    # crashee con TargetCloseError por límites de memoria/IPC al evaluar strings gigantes en Base64
+    # 1. Intento por URL interna de streaming (ideal para Docker y archivos > 3MB)
     if len(archivo_bytes) > 3 * 1024 * 1024:
         download_url = f"http://nabla-webhook:8000/download/{filename}"
+        payloads_url = [
+            {"chatId": chat_id, "file": {"url": download_url, "filename": filename, "mimetype": mimetype}, "filename": filename},
+            {"chatId": chat_id, "url": download_url, "filename": filename, "mimetype": mimetype},
+            {"chatId": chat_id, "file": download_url, "filename": filename, "mimetype": mimetype},
+        ]
+        for p in payloads_url:
+            try:
+                r = http_requests.post(
+                    f"{OPENWA_URL}/api/sessions/{session_id}/messages/send-document",
+                    json=p,
+                    headers={"x-api-key": OPENWA_KEY},
+                    timeout=180
+                )
+                if r.status_code in (200, 201):
+                    print(f"✅ Documento '{filename}' enviado con éxito vía URL a {chat_id}.", flush=True)
+                    return True
+                print(f"⚠️ Intento URL status {r.status_code}: {r.text}", flush=True)
+            except Exception as e:
+                print(f"⚠️ Excepción al enviar vía URL: {e}", flush=True)
+
+    # 2. Intento por Base64 / Data URI (estándar OpenWA)
+    b64 = base64.b64encode(archivo_bytes).decode()
+    data_uri = f"data:{mimetype};base64,{b64}"
+    
+    payloads_b64 = [
+        {"chatId": chat_id, "file": {"data": b64, "filename": filename, "mimetype": mimetype}, "filename": filename},
+        {"chatId": chat_id, "file": data_uri, "filename": filename, "mimetype": mimetype},
+        {"chatId": chat_id, "base64": b64, "mimetype": mimetype, "filename": filename},
+        {"chatId": chat_id, "file": b64, "filename": filename, "mimetype": mimetype},
+    ]
+    for p in payloads_b64:
         try:
-            print(f"🔗 Enviando mediante streaming URL interna de Docker: {download_url}", flush=True)
             r = http_requests.post(
                 f"{OPENWA_URL}/api/sessions/{session_id}/messages/send-document",
-                json={
-                    "chatId": chat_id,
-                    "url": download_url,
-                    "filename": filename,
-                },
+                json=p,
                 headers={"x-api-key": OPENWA_KEY},
                 timeout=180
             )
             if r.status_code in (200, 201):
-                print(f"✅ Documento '{filename}' enviado con éxito vía streaming a {chat_id}.", flush=True)
+                print(f"✅ Documento '{filename}' enviado con éxito a {chat_id}.", flush=True)
                 return True
-            print(f"⚠️ Falló envío vía URL (Status: {r.status_code} - {r.text}). Intentando fallback Base64...", flush=True)
+            print(f"⚠️ Intento Base64 status {r.status_code}: {r.text}", flush=True)
         except Exception as e:
-            print(f"⚠️ Excepción al enviar vía URL: {e}. Intentando fallback Base64...", flush=True)
+            print(f"⚠️ Excepción enviando documento: {e}", flush=True)
 
-    # 2. Envío mediante Base64 (estándar para archivos medianos o fallback)
-    b64 = base64.b64encode(archivo_bytes).decode()
+    # 3. Fallback adicional a /messages/send-file
     try:
         r = http_requests.post(
-            f"{OPENWA_URL}/api/sessions/{session_id}/messages/send-document",
-            json={
-                "chatId": chat_id,
-                "base64": b64,
-                "mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "filename": filename,
-            },
+            f"{OPENWA_URL}/api/sessions/{session_id}/messages/send-file",
+            json={"chatId": chat_id, "file": data_uri, "filename": filename},
             headers={"x-api-key": OPENWA_KEY},
             timeout=180
         )
         if r.status_code in (200, 201):
-            print(f"✅ Documento '{filename}' enviado con éxito a {chat_id}.", flush=True)
+            print(f"✅ Documento '{filename}' enviado con éxito vía send-file a {chat_id}.", flush=True)
             return True
-        print(f"❌ Error enviando documento. Status: {r.status_code} - {r.text}", flush=True)
-        return False
     except Exception as e:
-        print(f"❌ Excepción enviando documento: {e}", flush=True)
-        return False
+        print(f"❌ Falló fallback send-file: {e}", flush=True)
+
+    print(f"❌ No fue posible despachar el documento '{filename}' tras agotar todos los métodos de OpenWA.", flush=True)
+    return False
 
 
 @app.post("/webhook")
