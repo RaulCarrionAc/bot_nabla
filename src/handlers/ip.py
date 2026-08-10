@@ -810,7 +810,12 @@ def ejecutar_calculo_ip(
 
     # Normalizar valores de tipo_dia (ej: DL, DS, DF)
     if "tipo_dia" in df_a5.columns:
-        df_a5["tipo_dia"] = df_a5["tipo_dia"].astype(str).str.strip().str.upper()
+        df_a5["tipo_dia"] = df_a5["tipo_dia"].replace({"DOM": "DF", "SAB": "DS", "LAB": "DL", "L": "DL", "S": "DS", "D": "DF"}).astype(str).str.strip().str.upper()
+
+    # Normalizar Sentido en df_a5 (0=Ida, 1=Reg)
+    mapeo_sentido_completo = {"Ida": 0, "Reg": 1, "I": 0, "V": 1, "Regreso": 1, "0": 0, "1": 1, 0: 0, 1: 1}
+    if "Sentido" in df_a5.columns:
+        df_a5["Sentido"] = df_a5["Sentido"].replace(mapeo_sentido_completo).astype(int)
 
     for col in ["IPP_anterior", "TPP", "IPP_posterior"]:
         if col in df_a5.columns:
