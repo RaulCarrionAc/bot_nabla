@@ -9,7 +9,25 @@ import openpyxl.utils
 import xml.etree.ElementTree as ET
 from typing import Tuple, List, Any
 
-DEFAULT_TEMPLATE_PATH = os.path.join("data", "templates", "template_speeds.xlsx")
+def encontrar_plantilla_velocidades(custom_path: str = None) -> str:
+    """Busca la plantilla template_speeds.xlsx en múltiples ubicaciones conocidas (local y Docker)."""
+    if custom_path and os.path.exists(custom_path):
+        return os.path.abspath(custom_path)
+        
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "..", "templates", "template_speeds.xlsx"),
+        os.path.join(os.path.dirname(__file__), "templates", "template_speeds.xlsx"),
+        os.path.join("templates", "template_speeds.xlsx"),
+        os.path.join("src", "templates", "template_speeds.xlsx"),
+        os.path.join("data", "templates", "template_speeds.xlsx"),
+        os.path.join("/app", "templates", "template_speeds.xlsx"),
+        os.path.join("/app", "data", "templates", "template_speeds.xlsx"),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return os.path.abspath(c)
+            
+    raise FileNotFoundError("Plantilla base 'template_speeds.xlsx' no encontrada en ninguna ubicación.")
 
 
 def _format_cell_xml(r_idx: int, col_str: str, val: Any) -> str:
@@ -115,16 +133,14 @@ def generar_libro_excel_velocidades(
     df_desref: pd.DataFrame,
     df_params: pd.DataFrame,
     output_path: str,
-    template_path: str = DEFAULT_TEMPLATE_PATH
+    template_path: str = None
 ) -> Tuple[str, bytes]:
     """
     Genera el libro Excel inyectando directamente los XML generados en streaming
     dentro del archivo ZIP base (.xlsx). Reduce el tiempo de 85s a <5s y el consumo de RAM a <20MB.
     """
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    
-    if not os.path.exists(template_path):
-        raise FileNotFoundError(f"Plantilla base no encontrada en {template_path}")
+    template_path = encontrar_plantilla_velocidades(template_path)
 
     # 1. Generar XMLs en memoria
     xml_datos = _generar_xml_worksheet(list(df_datos.columns), df_datos, is_desref=False)
