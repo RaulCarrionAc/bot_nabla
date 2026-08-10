@@ -255,12 +255,18 @@ def cargar_lpp(a5_path: Path, hoja: str = "LPP", skiprows: int = 10) -> pd.DataF
 def _limpiar_expediciones(df_expediciones: pd.DataFrame) -> pd.DataFrame:
     df = df_expediciones.copy()
 
+    # Si "Inicio Expedicion" es nula o vacía pero "Fecha" tiene valor (caso Tasacop), usar "Fecha"
+    if "Inicio Expedicion" in df.columns and "Fecha" in df.columns:
+        df["Inicio Expedicion"] = df["Inicio Expedicion"].fillna(df["Fecha"])
+        mask_vacia = df["Inicio Expedicion"].astype(str).str.strip().isin(["", "nan", "None", "NaT"])
+        df.loc[mask_vacia, "Inicio Expedicion"] = df.loc[mask_vacia, "Fecha"]
+    elif "Fecha" in df.columns and "Inicio Expedicion" not in df.columns:
+        df["Inicio Expedicion"] = df["Fecha"]
+
     renombres = {
         "Variante": "Servicio",
         "Dirección": "Sentido",
         "Direccion": "Sentido",
-        "Fecha": "Inicio Expedicion",
-        "Inicio Expedición": "Inicio Expedicion",
         "Período": "Periodo",
     }
     for col_orig, col_dest in renombres.items():
@@ -292,7 +298,11 @@ def _limpiar_expediciones(df_expediciones: pd.DataFrame) -> pd.DataFrame:
     df = df[df["Estado_clean"].str.startswith("val")].copy()
     df["Estado"] = "valida"
 
-    df["fecha"] = pd.to_datetime(df["Inicio Expedicion"]).dt.date
+    # Extraer fecha
+    df["fecha"] = pd.to_datetime(df["Inicio Expedicion"], errors="coerce").dt.date
+    if df["fecha"].isna().all() and "Fecha" in df.columns:
+        df["fecha"] = pd.to_datetime(df["Fecha"], errors="coerce").dt.date
+
     df["tipo_dia"] = df["fecha"].apply(clasificar_tipo_dia)
 
     return df
