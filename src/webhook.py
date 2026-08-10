@@ -236,7 +236,7 @@ def tarea_generar_reporte_tv(session_id: str, chat_id: str, mes_str: str, anio: 
 
         df_datos, df_desref, df_params, metrics = procesar_modelo_cinematico(
             df_in, 
-            po_a5_path=DEFAULT_PO_A5_PATH,
+            po_a5_path=None,
             operador="tasacop"
         )
 
