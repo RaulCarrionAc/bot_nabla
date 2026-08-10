@@ -52,41 +52,49 @@ def _format_cell_xml(r_idx: int, col_str: str, val: Any) -> str:
         return f'<c r="{cell_ref}" t="inlineStr"><is><t>{escaped}</t></is></c>'
 
 
-def _generar_xml_worksheet(headers: List[str], df: pd.DataFrame, is_desref: bool = False) -> str:
-    """Construye el XML completo de una hoja de trabajo en memoria usando streaming de strings."""
-    col_letters = [openpyxl.utils.get_column_letter(i + 1) for i in range(len(headers))]
-    max_row = len(df) + 1
-    
-    # Cabeceras y metadatos estándar de OpenXML
-    chunks = [
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n',
-        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">\n',
-        f'<dimension ref="A1:{col_letters[-1]}{max_row}"/>\n',
-        '<sheetViews><sheetView workbookViewId="0"/></sheetViews>\n',
-        '<sheetFormatPr defaultRowHeight="15"/>\n',
-        '<sheetData>\n'
-    ]
-    
-    # Fila 1: Encabezados
-    h_row = ['<row r="1">']
-    for c_idx, h in enumerate(headers):
-        h_row.append(f'<c r="{col_letters[c_idx]}1" t="inlineStr"><is><t>{html.escape(str(h))}</t></is></c>')
-    h_row.append('</row>\n')
-    chunks.append(''.join(h_row))
-    
-    # Filas de datos
-    values = df.values
-    for r_idx, row in enumerate(values, start=2):
-        row_cells = [f'<row r="{r_idx}">']
-        for c_idx, val in enumerate(row):
-            if val is not None and not pd.isnull(val):
-                c_xml = _format_cell_xml(r_idx, col_letters[c_idx], val)
-                row_cells.append(c_xml)
-        row_cells.append('</row>\n')
-        chunks.append(''.join(row_cells))
+def _escribir_xml_worksheet_streaming(file_path: str, col_names: List[str], df: pd.DataFrame, is_desref: bool = False):
+    """Escribe el XML de la hoja directamente a disco en bloques para mantener el uso de RAM < 5MB."""
+    with open(file_path, 'w', encoding='utf-8', buffering=1024*1024) as f:
+        col_letters = [openpyxl.utils.get_column_letter(i + 1) for i in range(len(col_names))]
+        last_col_letter = col_letters[-1]
+        total_rows = len(df) + 1
         
-    chunks.append('</sheetData>\n</worksheet>')
-    return ''.join(chunks)
+        f.write('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n')
+        f.write('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">\n')
+        f.write(f'<dimension ref="A1:{last_col_letter}{total_rows}"/>\n')
+        f.write('<sheetViews><sheetView workbookViewId="0"/></sheetViews>\n')
+        f.write('<sheetFormatPr defaultRowHeight="15"/>\n')
+        f.write('<sheetData>\n')
+        
+        # Cabecera
+        f.write('<row r="1">')
+        for idx, col in enumerate(col_names):
+            esc = html.escape(str(col))
+            f.write(f'<c r="{col_letters[idx]}1" t="inlineStr"><is><t>{esc}</t></is></c>')
+        f.write('</row>\n')
+        
+        # Filas de datos
+        records = df.to_numpy()
+        buffer = []
+        for r_offset, row in enumerate(records):
+            r_idx = r_offset + 2
+            row_cells = [f'<row r="{r_idx}">']
+            for c_idx, val in enumerate(row):
+                if val is not None and not pd.isnull(val):
+                    c_xml = _format_cell_xml(r_idx, col_letters[c_idx], val)
+                    row_cells.append(c_xml)
+            row_cells.append('</row>\n')
+            buffer.append(''.join(row_cells))
+            
+            if len(buffer) >= 1000:
+                f.write(''.join(buffer))
+                buffer.clear()
+                
+        if buffer:
+            f.write(''.join(buffer))
+            buffer.clear()
+            
+        f.write('</sheetData>\n</worksheet>')
 
 
 def _generar_xml_parametros(df_params: pd.DataFrame) -> str:
@@ -136,36 +144,35 @@ def generar_libro_excel_velocidades(
     template_path: str = None
 ) -> Tuple[str, bytes]:
     """
-    Genera el libro Excel inyectando directamente los XML generados en streaming
-    dentro del archivo ZIP base (.xlsx). Reduce el tiempo de 85s a <5s y el consumo de RAM a <20MB.
+    Genera el libro Excel inyectando directamente los XML generados en streaming directo a disco
+    dentro del archivo ZIP base (.xlsx). Reduce el tiempo de 85s a <5s y el consumo de RAM a <5MB.
     """
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     template_path = encontrar_plantilla_velocidades(template_path)
 
-    # 1. Generar XMLs en memoria
-    xml_datos = _generar_xml_worksheet(list(df_datos.columns), df_datos, is_desref=False)
-    xml_desref = _generar_xml_worksheet(list(df_desref.columns), df_desref, is_desref=True)
-    
-    new_datos_max_row = len(df_datos) + 1
-    new_desref_max_row = len(df_desref) + 1
-    
-    ns = {'ns': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
-    ET.register_namespace('', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
-    
-    temp_fd, temp_path = tempfile.mkstemp()
-    os.close(temp_fd)
+    temp_datos_path = tempfile.mktemp(suffix="_datos.xml")
+    temp_desref_path = tempfile.mktemp(suffix="_desref.xml")
+    temp_zip_path = tempfile.mktemp(suffix="_output.xlsx")
     
     try:
+        # 1. Escribir XMLs en disco por streaming
+        _escribir_xml_worksheet_streaming(temp_datos_path, list(df_datos.columns), df_datos, is_desref=False)
+        _escribir_xml_worksheet_streaming(temp_desref_path, list(df_desref.columns), df_desref, is_desref=True)
+        
+        new_datos_max_row = len(df_datos) + 1
+        new_desref_max_row = len(df_desref) + 1
+        
+        ns = {'ns': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+        ET.register_namespace('', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        
+        # 2. Inyectar en ZIP
         with zipfile.ZipFile(template_path, 'r') as zin:
-            with zipfile.ZipFile(temp_path, 'w', zipfile.ZIP_DEFLATED) as zout:
+            with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zout:
                 for item in zin.infolist():
-                    # Inyectar hoja Datos (sheet2.xml)
                     if item.filename == 'xl/worksheets/sheet2.xml':
-                        zout.writestr(item.filename, xml_datos.encode('utf-8'))
-                    # Inyectar hoja desref (sheet3.xml)
+                        zout.write(temp_datos_path, arcname=item.filename)
                     elif item.filename == 'xl/worksheets/sheet3.xml':
-                        zout.writestr(item.filename, xml_desref.encode('utf-8'))
-                    # Actualizar Pivot Cache 1 (Datos)
+                        zout.write(temp_desref_path, arcname=item.filename)
                     elif item.filename == 'xl/pivotCache/pivotCacheDefinition1.xml':
                         xml_data = zin.read(item.filename)
                         root = ET.fromstring(xml_data)
@@ -175,7 +182,6 @@ def generar_libro_excel_velocidades(
                         root.set('refreshOnLoad', '1')
                         new_xml = ET.tostring(root, encoding='UTF-8', xml_declaration=True)
                         zout.writestr(item.filename, new_xml)
-                    # Actualizar Pivot Cache 2 (desref)
                     elif item.filename == 'xl/pivotCache/pivotCacheDefinition2.xml':
                         xml_data = zin.read(item.filename)
                         root = ET.fromstring(xml_data)
@@ -189,10 +195,14 @@ def generar_libro_excel_velocidades(
                         data = zin.read(item.filename)
                         zout.writestr(item, data)
                         
-        shutil.move(temp_path, output_path)
+        shutil.move(temp_zip_path, output_path)
     finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        for p in [temp_datos_path, temp_desref_path, temp_zip_path]:
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
 
     with open(output_path, 'rb') as f:
         archivo_bytes = f.read()

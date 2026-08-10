@@ -40,7 +40,7 @@ services:
       context: .
       dockerfile: Dockerfile.webhook
     container_name: nabla-webhook
-    mem_limit: 512m
+    mem_limit: 1024m
     restart: unless-stopped
     env_file:
       - .env.prod
