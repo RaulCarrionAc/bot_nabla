@@ -101,22 +101,25 @@ def download_archivo(filename: str):
 OPENWA_URL = os.getenv("URL", "http://openwa-api:2785")
 OPENWA_KEY = os.getenv("API-KEY")
 
-def obtener_session_id_activo() -> str | None:
+def obtener_session_id_activo() -> str:
     """Consulta a la API de OpenWA para obtener el ID de la sesión 'nabla-bot' activa."""
     try:
         r = http_requests.get(
             f"{OPENWA_URL}/api/sessions",
-            headers={"x-api-key": OPENWA_KEY}
+            headers={"x-api-key": OPENWA_KEY},
+            timeout=5
         )
         if r.status_code in (200, 201):
             sesiones = r.json()
-            if isinstance(sesiones, list):
+            if isinstance(sesiones, list) and sesiones:
                 for s in sesiones:
-                    if s.get("name") == "nabla-bot" and s.get("status") == "ready":
-                        return s.get("id")
+                    if s.get("name") == "nabla-bot" and s.get("status") in ("ready", "WORKING", "STARTING", "authenticated"):
+                        return s.get("id") or s.get("name") or "nabla-bot"
+                # Si hay alguna sesión activa
+                return sesiones[0].get("id") or sesiones[0].get("name") or "nabla-bot"
     except Exception as e:
         print(f"⚠️ Error al obtener session_id activo: {e}", flush=True)
-    return None
+    return "nabla-bot"
 
 
 def tarea_actualizar_datos(session_id: str, chat_id: str):
@@ -481,67 +484,63 @@ def enviar_documento(session_id: str, chat_id: str, archivo_bytes: bytes, filena
     print(f"📤 Enviando documento '{filename}' ({len(archivo_bytes)/1024/1024:.2f} MB) a {chat_id}...", flush=True)
     mimetype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     
-    # 1. Intento por URL interna de streaming (ideal para Docker y archivos > 3MB)
-    if len(archivo_bytes) > 3 * 1024 * 1024:
-        download_url = f"http://nabla-webhook:8000/download/{filename}"
-        payloads_url = [
-            {"chatId": chat_id, "file": {"url": download_url, "filename": filename, "mimetype": mimetype}, "filename": filename},
-            {"chatId": chat_id, "url": download_url, "filename": filename, "mimetype": mimetype},
-            {"chatId": chat_id, "file": download_url, "filename": filename, "mimetype": mimetype},
-        ]
-        for p in payloads_url:
+    candidate_sessions = list(dict.fromkeys([s for s in [session_id, obtener_session_id_activo(), "nabla-bot"] if s]))
+    download_url = f"http://nabla-webhook:8000/download/{filename}"
+    
+    # 1. Intentar streaming vía URL interna (evita pasar megabytes de Base64 por JSON)
+    for sess in candidate_sessions:
+        for endpoint in ["send-file", "send-document"]:
+            url_target = f"{OPENWA_URL}/api/sessions/{sess}/messages/{endpoint}"
             try:
-                r = http_requests.post(
-                    f"{OPENWA_URL}/api/sessions/{session_id}/messages/send-document",
-                    json=p,
-                    headers={"x-api-key": OPENWA_KEY},
-                    timeout=180
-                )
+                # Esquema estándar A: file string directo con URL
+                p1 = {"chatId": chat_id, "file": download_url, "filename": filename, "mimetype": mimetype}
+                r = http_requests.post(url_target, json=p1, headers={"x-api-key": OPENWA_KEY}, timeout=120)
                 if r.status_code in (200, 201):
-                    print(f"✅ Documento '{filename}' enviado con éxito vía URL a {chat_id}.", flush=True)
+                    print(f"✅ Documento '{filename}' enviado con éxito vía streaming URL ({endpoint}) a {chat_id}.", flush=True)
                     return True
-                print(f"⚠️ Intento URL status {r.status_code}: {r.text}", flush=True)
+                
+                # Esquema estándar B: file object
+                p2 = {"chatId": chat_id, "file": {"url": download_url, "filename": filename, "mimetype": mimetype}, "filename": filename}
+                r = http_requests.post(url_target, json=p2, headers={"x-api-key": OPENWA_KEY}, timeout=120)
+                if r.status_code in (200, 201):
+                    print(f"✅ Documento '{filename}' enviado con éxito vía streaming URL objeto ({endpoint}) a {chat_id}.", flush=True)
+                    return True
             except Exception as e:
-                print(f"⚠️ Excepción al enviar vía URL: {e}", flush=True)
+                print(f"⚠️ Error intentando streaming URL en {endpoint}: {e}", flush=True)
 
-    # 2. Intento por Base64 / Data URI (estándar OpenWA)
+    # 2. Fallback a Base64 estructurado
     b64 = base64.b64encode(archivo_bytes).decode()
     data_uri = f"data:{mimetype};base64,{b64}"
     
-    payloads_b64 = [
-        {"chatId": chat_id, "file": {"data": b64, "filename": filename, "mimetype": mimetype}, "filename": filename},
-        {"chatId": chat_id, "file": data_uri, "filename": filename, "mimetype": mimetype},
-        {"chatId": chat_id, "base64": b64, "mimetype": mimetype, "filename": filename},
-        {"chatId": chat_id, "file": b64, "filename": filename, "mimetype": mimetype},
-    ]
-    for p in payloads_b64:
-        try:
-            r = http_requests.post(
-                f"{OPENWA_URL}/api/sessions/{session_id}/messages/send-document",
-                json=p,
-                headers={"x-api-key": OPENWA_KEY},
-                timeout=180
-            )
-            if r.status_code in (200, 201):
-                print(f"✅ Documento '{filename}' enviado con éxito a {chat_id}.", flush=True)
-                return True
-            print(f"⚠️ Intento Base64 status {r.status_code}: {r.text}", flush=True)
-        except Exception as e:
-            print(f"⚠️ Excepción enviando documento: {e}", flush=True)
-
-    # 3. Fallback adicional a /messages/send-file
-    try:
-        r = http_requests.post(
-            f"{OPENWA_URL}/api/sessions/{session_id}/messages/send-file",
-            json={"chatId": chat_id, "file": data_uri, "filename": filename},
-            headers={"x-api-key": OPENWA_KEY},
-            timeout=180
-        )
-        if r.status_code in (200, 201):
-            print(f"✅ Documento '{filename}' enviado con éxito vía send-file a {chat_id}.", flush=True)
-            return True
-    except Exception as e:
-        print(f"❌ Falló fallback send-file: {e}", flush=True)
+    for sess in candidate_sessions:
+        for endpoint in ["send-document", "send-file"]:
+            url_target = f"{OPENWA_URL}/api/sessions/{sess}/messages/{endpoint}"
+            try:
+                # Esquema C: file object con data
+                p3 = {
+                    "chatId": chat_id,
+                    "file": {
+                        "mimetype": mimetype,
+                        "filename": filename,
+                        "data": b64
+                    },
+                    "filename": filename
+                }
+                r = http_requests.post(url_target, json=p3, headers={"x-api-key": OPENWA_KEY}, timeout=180)
+                if r.status_code in (200, 201):
+                    print(f"✅ Documento '{filename}' enviado con éxito vía Base64 objeto ({endpoint}) a {chat_id}.", flush=True)
+                    return True
+                    
+                # Esquema D: data URI string
+                p4 = {"chatId": chat_id, "file": data_uri, "filename": filename}
+                r = http_requests.post(url_target, json=p4, headers={"x-api-key": OPENWA_KEY}, timeout=180)
+                if r.status_code in (200, 201):
+                    print(f"✅ Documento '{filename}' enviado con éxito vía Data URI ({endpoint}) a {chat_id}.", flush=True)
+                    return True
+                else:
+                    print(f"⚠️ Endpoint {url_target} retornó status {r.status_code}: {r.text}", flush=True)
+            except Exception as e:
+                print(f"⚠️ Excepción en Base64 {endpoint}: {e}", flush=True)
 
     print(f"❌ No fue posible despachar el documento '{filename}' tras agotar todos los métodos de OpenWA.", flush=True)
     return False

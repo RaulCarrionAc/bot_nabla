@@ -165,9 +165,9 @@ def generar_libro_excel_velocidades(
         ns = {'ns': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
         ET.register_namespace('', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
         
-        # 2. Inyectar en ZIP
+        # 2. Inyectar en ZIP con compresión máxima (nivel 9) para reducir el tamaño al mínimo
         with zipfile.ZipFile(template_path, 'r') as zin:
-            with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zout:
+            with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as zout:
                 for item in zin.infolist():
                     if item.filename == 'xl/worksheets/sheet2.xml':
                         zout.write(temp_datos_path, arcname=item.filename)
