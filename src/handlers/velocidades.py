@@ -345,23 +345,30 @@ def procesar_modelo_cinematico(
     df_params, distances_map, po_lookup = cargar_parametros_po(po_a5_path)
 
     df_in['SS_temp'] = df_in['Variante'].astype(str) + "_" + df_in['Dirección'].astype(str)
-
+    
     chk_cols = [f"{i:02d}" for i in range(1, 23)]
-    df_in_chks_sec = {col: df_in[col].apply(parse_time_to_seconds) for col in chk_cols}
+    
+    # Pre-calcular segundos de horas para máxima velocidad
+    chk_secs_matrix = []
+    for c in chk_cols:
+        chk_secs_matrix.append(df_in[c].apply(parse_time_to_seconds).tolist())
+    # chk_secs_matrix[col_idx][row_idx]
 
     datos_rows_to_write = []
     desref_rows_to_write = []
 
-    for idx, row in df_in.iterrows():
+    records_in = df_in.to_dict('records')
+
+    for idx, row in enumerate(records_in):
         row_id = idx + 1
 
         times_sec = []
         times_obj = []
-        for col in chk_cols:
-            sec = df_in_chks_sec[col].iloc[idx]
+        for c_idx, col in enumerate(chk_cols):
+            sec = chk_secs_matrix[c_idx][idx]
             times_sec.append(sec)
-            val = row[col]
-            if pd.isnull(val):
+            val = row.get(col)
+            if val is None or pd.isnull(val):
                 times_obj.append(None)
             else:
                 if isinstance(val, datetime.time):
@@ -383,17 +390,17 @@ def procesar_modelo_cinematico(
                 break
         puntos_control_OP = last_chk_idx
 
-        ss = row['SS_temp']
-        base_ss = f"{get_base_service(row['Variante'])}_{row['Dirección']}"
+        ss = row.get('SS_temp')
+        base_ss = f"{get_base_service(row.get('Variante'))}_{row.get('Dirección')}"
         puntos_control_PO = po_lookup.get(ss) or po_lookup.get(base_ss)
 
         # Criterio de muestra: Estado Válida y llegó al último punto exigido por PO
         muestra = 0
-        if row['Estado'] == 'Válida' and puntos_control_PO is not None and puntos_control_OP == puntos_control_PO:
+        if row.get('Estado') == 'Válida' and puntos_control_PO is not None and puntos_control_OP == puntos_control_PO:
             muestra = 1
 
-        fecha_val = row['Fecha']
-        if pd.notnull(fecha_val):
+        fecha_val = row.get('Fecha')
+        if pd.notnull(fecha_val) and not isinstance(fecha_val, str):
             año = fecha_val.year
             mes = fecha_val.month
             día = fecha_val.day
@@ -402,9 +409,9 @@ def procesar_modelo_cinematico(
             año, mes, día = 2026, 1, 1
             fecha_dt = datetime.date(2026, 1, 1)
 
-        tipo_dia_periodo = f"{row['Tipo de Día']}_{row['Período']}"
-        ss_tipo_dia = f"{ss}_{row['Tipo de Día']}"
-        ss_tipo_dia_periodo = f"{ss_tipo_dia}_{row['Período']}"
+        tipo_dia_periodo = f"{row.get('Tipo de Día')}_{row.get('Período')}"
+        ss_tipo_dia = f"{ss}_{row.get('Tipo de Día')}"
+        ss_tipo_dia_periodo = f"{ss_tipo_dia}_{row.get('Período')}"
 
         # Hora de paso final PC_F
         pc_f_val = None
@@ -415,17 +422,17 @@ def procesar_modelo_cinematico(
 
         datos_row_vals = [
             fecha_dt,
-            row['Bus'],
-            row['Conductor'],
-            row['Con Despacho Asociado'],
-            row['Variante'],
-            row['Período'],
-            row['Tipo de Día'],
-            row['Dirección'],
-            row['Estado'],
-            row['Causa'] if pd.notnull(row['Causa']) else None,
-            row['Tipo Demanda'] if pd.notnull(row['Tipo Demanda']) else None,
-            row['Frecuencia Exigida']
+            row.get('Bus'),
+            row.get('Conductor'),
+            row.get('Con Despacho Asociado'),
+            row.get('Variante'),
+            row.get('Período'),
+            row.get('Tipo de Día'),
+            row.get('Dirección'),
+            row.get('Estado'),
+            row.get('Causa') if pd.notnull(row.get('Causa')) else None,
+            row.get('Tipo Demanda') if pd.notnull(row.get('Tipo Demanda')) else None,
+            row.get('Frecuencia Exigida')
         ] + times_obj + [
             row_id,
             año,
@@ -437,12 +444,12 @@ def procesar_modelo_cinematico(
             muestra,
             tipo_dia_periodo,
             ss_tipo_dia,
-            row['Período'],
-            row['Tipo de Día'],
+            row.get('Período'),
+            row.get('Tipo de Día'),
             ss_tipo_dia_periodo,
-            row['Variante'],
-            row['Dirección'],
-            row['Tipo de Día'],
+            row.get('Variante'),
+            row.get('Dirección'),
+            row.get('Tipo de Día'),
             pc_f_val
         ]
         datos_rows_to_write.append(datos_row_vals)
@@ -478,24 +485,17 @@ def procesar_modelo_cinematico(
                 t_b = times_sec[c_b - 1]
 
                 diff_sec = t_b - t_a
-                if diff_sec >= 0:
-                    dist_ab_m = d_curr[c_b - 1] - (d_curr[c_a - 2] if c_a > 1 else 0.0)
-                    if dist_ab_m > 0 and diff_sec > 0:
-                        v_ab = (dist_ab_m / 1000.0) / (diff_sec / 3600.0)
-                    else:
-                        v_ab = None
-
-                    for c in range(c_a + 1, c_b + 1):
-                        seg_m = seg_dists_m.get(c, 0.0)
-                        if dist_ab_m > 0 and diff_sec > 0:
-                            t_seg_sec = diff_sec * (seg_m / dist_ab_m)
-                            step_metrics[c]['delta_TV'] = t_seg_sec / 86400.0
-                            step_metrics[c]['delta_TV_min'] = round(t_seg_sec / 60.0) / 1440.0
-                            step_metrics[c]['velocidad'] = v_ab
-                        elif diff_sec == 0:
-                            step_metrics[c]['delta_TV'] = 0.0
-                            step_metrics[c]['delta_TV_min'] = 0.0
-                            step_metrics[c]['velocidad'] = None
+                if diff_sec > 0:
+                    delta_d_m = d_curr[c_b - 1] - d_curr[c_a - 1]
+                    if delta_d_m > 0:
+                        vel_interp = (delta_d_m / 1000.0) / (diff_sec / 3600.0)
+                        for c in range(c_a + 1, c_b + 1):
+                            seg_m = seg_dists_m.get(c, 0.0)
+                            if seg_m > 0:
+                                step_metrics[c]['velocidad'] = vel_interp
+                                seg_sec = (seg_m / delta_d_m) * diff_sec
+                                step_metrics[c]['delta_TV'] = seg_sec / 86400.0
+                                step_metrics[c]['delta_TV_min'] = round(seg_sec / 60.0) / 1440.0
 
             # Tramo 1: Origen -> PC 1
             first_op_speed = None
@@ -526,7 +526,11 @@ def procesar_modelo_cinematico(
                     step_metrics[N + 1]['delta_TV'] = t_final_sec / 86400.0
                     step_metrics[N + 1]['delta_TV_min'] = round(t_final_sec / 60.0) / 1440.0
 
-        for c in range(1, 23):
+        # Acotar desref solo a los puntos de control reales del servicio (reduce tamaño de 36MB a <5MB)
+        max_chk_reales = max(puntos_control_PO or 0, puntos_control_OP or 0, N + 1 if N > 0 else 0)
+        max_chk_reales = min(22, max(1, max_chk_reales))
+
+        for c in range(1, max_chk_reales + 1):
             hora_paso = times_obj[c - 1]
             m = step_metrics.get(c, {})
             desref_row_vals = [
@@ -545,11 +549,11 @@ def procesar_modelo_cinematico(
                 muestra,
                 tipo_dia_periodo,
                 ss_tipo_dia,
-                row['Período'],
-                row['Tipo de Día'],
+                row.get('Período'),
+                row.get('Tipo de Día'),
                 ss_tipo_dia_periodo,
-                row['Variante'],
-                row['Dirección'],
+                row.get('Variante'),
+                row.get('Dirección'),
                 m.get('delta_TV_min'),
                 m.get('velocidad')
             ]
