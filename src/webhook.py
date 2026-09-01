@@ -548,8 +548,19 @@ async def recibir_evento(request: Request, background_tasks: BackgroundTasks):
     print(f"🔔 [DEBUG] Data completa: {evento.get('data')}", flush=True)
 
     data = evento.get("data", {})
+    event_type = evento.get("event")
     session_id = evento.get("sessionId") or data.get("sessionId") or obtener_session_id_activo()
+
+    # Ignorar eventos de sistema o cambios de estado de sesión
+    if event_type == "session.status":
+        status = data.get("status")
+        print(f"ℹ️ [SESSION STATUS] Sesión '{session_id}' -> Estado: {status}", flush=True)
+        return {"status": "ok"}
+
     chat_id = data.get("chatId")
+    if not chat_id:
+        return {"status": "ok"}
+
     from_me = data.get("fromMe", False)
     cuerpo = str(data.get("body") or "").strip().lower()
 
