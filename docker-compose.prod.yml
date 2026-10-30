@@ -1,7 +1,8 @@
 services:
   openwa-api:
-    image: ghcr.io/rmyndharis/openwa:0.8.19
+    image: ghcr.io/rmyndharis/openwa:0.25.0
     container_name: openwa-api
+    stop_grace_period: 75s
     mem_limit: 700m
     restart: unless-stopped
     env_file:
@@ -19,7 +20,7 @@ services:
       - PUPPETEER_ARGS=--no-sandbox,--disable-setuid-sandbox,--disable-dev-shm-usage,--disable-gpu,--single-process,--no-zygote,--ignore-certificate-errors
       - STORAGE_TYPE=local
       - STORAGE_LOCAL_PATH=/app/data/media
-      - API_MASTER_KEY=${API_MASTER_KEY}
+      - API_MASTER_KEY=${API_MASTER_KEY:?Define API_MASTER_KEY en .env.prod y usa --env-file .env.prod}
       - RESOLVE_LID_TO_PHONE=true
       - BODY_SIZE_LIMIT=50mb
       - WEBHOOK_SSRF_PROTECT=false

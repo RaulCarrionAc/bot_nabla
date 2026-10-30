@@ -111,10 +111,18 @@ El proyecto está configurado para desplegarse mediante Docker Compose. El webho
 Para desplegar los servicios en segundo plano:
 
 ```bash
-docker-compose -f docker-compose.prod.yml up --build -d
+docker compose --env-file .env.prod -f docker-compose.prod.yml config --quiet
+docker compose --env-file .env.prod -f docker-compose.prod.yml pull openwa-api
+docker compose --env-file .env.prod -f docker-compose.prod.yml up --build -d
 ```
 
 > ⚠️ **Importante**: La base de datos se almacena en el volumen local `./data` para evitar pérdidas de información al reiniciar o recrear los contenedores.
+
+OpenWA está fijado a `ghcr.io/rmyndharis/openwa:0.25.0` (antes `0.8.19`). La API usa su propia imagen; `Dockerfile.bot_prod` construye el bot Python. Usa siempre `--env-file .env.prod`: el `env_file` de cada servicio no proporciona las variables que Compose interpola en el YAML.
+
+Antes de actualizar, detén los servicios y respalda `./data`, incluidas la base SQLite y las sesiones de OpenWA. Si necesitas volver a `0.8.19`, restaura también ese respaldo con los servicios detenidos; una base actualizada puede no ser compatible con la versión anterior.
+
+Después del despliegue, comprueba `docker compose --env-file .env.prod -f docker-compose.prod.yml ps` y verifica la conexión de la sesión, la recepción del webhook y el envío de texto y documentos.
 
 ---
 
