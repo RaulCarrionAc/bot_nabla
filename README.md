@@ -46,7 +46,7 @@ bot_nabla/
 
 ## ⚙️ Configuración y Variables de Entorno
 
-Crea un archivo `.env` en la raíz del proyecto (basándote en `.env.prod`) con la siguiente estructura:
+En producción, crea `.env.prod` en la raíz del repositorio. Para desarrollo local usa `.env`. Ambos están excluidos de Git. Completa las credenciales en la VM y, para la primera instalación, genera una clave con `openssl rand -hex 32`. Copia el mismo resultado en las dos variables de clave del ejemplo. En una VM existente conserva las claves y la sesión actuales.
 
 ```env
 # Configuración del Administrador Principal (Superusuario de WhatsApp)
@@ -65,8 +65,9 @@ DATABASE_URL=sqlite:///data/bot_nabla.db
 
 # Configuración del Servidor de OpenWA
 URL=http://openwa-api:2785
-API-KEY=<genera-una-key-segura>
-API_MASTER_KEY=dev-admin-key
+API-KEY=<clave-generada>
+API_MASTER_KEY=<misma-clave-generada>
+OPENWA_SESSION_NAME=nabla-bot
 WEBHOOK_URL=http://nabla-webhook:8000/webhook
 ```
 
@@ -106,23 +107,49 @@ uv run uvicorn webhook:app --reload --port 8000
 
 ## 🐳 Despliegue en Producción (Docker)
 
-El proyecto está configurado para desplegarse mediante Docker Compose. El webhook se basa en una imagen Debian Slim a la que se le inyecta Chromium y las librerías de sistema de Playwright.
+### Primera instalación en una VM Linux
 
-Para desplegar los servicios en segundo plano:
+Necesitas Git, Docker y el complemento Docker Compose (`docker compose version`). Ejecuta en la VM:
 
 ```bash
-docker compose --env-file .env.prod -f docker-compose.prod.yml config --quiet
-docker compose --env-file .env.prod -f docker-compose.prod.yml pull openwa-api
+git clone --branch prod https://github.com/RaulCarrionAc/bot_nabla.git
+cd bot_nabla
+```
+
+Crea `.env.prod` con los valores de la sección de configuración. Desde esta carpeta, valida las variables, descarga la imagen de OpenWA y construye los dos servicios Python:
+
+```bash
+docker compose --env-file .env.prod -f docker-compose.prod.yml config --quiet &&
+docker compose --env-file .env.prod -f docker-compose.prod.yml pull openwa-api &&
 docker compose --env-file .env.prod -f docker-compose.prod.yml up --build -d
 ```
 
-> ⚠️ **Importante**: La base de datos se almacena en el volumen local `./data` para evitar pérdidas de información al reiniciar o recrear los contenedores.
+Comprueba el estado y abre los logs del bot:
 
-OpenWA está fijado a `docker.io/rmyndharis/openwa:0.26.0` (antes `0.8.19`). La API usa su propia imagen; `Dockerfile.bot_prod` construye el bot Python. Usa siempre `--env-file .env.prod`: el `env_file` de cada servicio no proporciona las variables que Compose interpola en el YAML.
+```bash
+docker compose --env-file .env.prod -f docker-compose.prod.yml ps
+docker compose --env-file .env.prod -f docker-compose.prod.yml logs --tail=100 -f nabla-bot
+```
 
-Antes de actualizar, detén los servicios y respalda `./data`, incluidas la base SQLite y las sesiones de OpenWA. Si necesitas volver a `0.8.19`, restaura también ese respaldo con los servicios detenidos; una base actualizada puede no ser compatible con la versión anterior.
+Cuando aparezca el QR, escanéalo desde WhatsApp → **Dispositivos vinculados → Vincular un dispositivo**. Espera el estado `ready` y la confirmación del webhook. Usa `Ctrl+C` para salir de los logs. Desde un número administrador, envía `!permisos` al bot y comprueba que recibes la lista.
 
-Después del despliegue, comprueba `docker compose --env-file .env.prod -f docker-compose.prod.yml ps` y verifica la conexión de la sesión, la recepción del webhook y el envío de texto y documentos.
+### Actualizar una VM existente después de un push
+
+En la VM, desde el repositorio, actualiza la rama de producción:
+
+```bash
+git switch prod && git pull --ff-only origin prod
+```
+
+Si solo cambió el scraping, los comandos de WhatsApp o los cálculos de indicadores, reconstruye únicamente el webhook. Este servicio ejecuta tanto `!actualizar` como la descarga programada:
+
+```bash
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build --no-deps nabla-webhook
+```
+
+Para cambios de OpenWA, del bot de sesión, de dependencias compartidas o de Compose, ejecuta el bloque completo de validación, descarga y arranque de la primera instalación. Comprueba el resultado con `ps` y los logs. Un `restart` por sí solo reutiliza la imagen anterior.
+
+Conserva el `.env.prod` de la VM y su carpeta `./data`. Compose vuelve a montar esa carpeta al recrear los contenedores. Si actualizas OpenWA y necesitas poder volver a la versión anterior, respalda `./data` con los servicios detenidos antes de arrancar la versión nueva, ya que puede cambiar el esquema de SQLite.
 
 ---
 
