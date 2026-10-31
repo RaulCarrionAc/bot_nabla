@@ -8,7 +8,7 @@ load_dotenv()
 API_KEY = os.getenv("API-KEY") 
 URL = os.getenv("URL")
 HEADERS = {"Content-Type": "application/json", "x-api-key": f"{API_KEY}"}
-SESSION_NAME = "nabla-bot"
+SESSION_NAME = os.getenv("OPENWA_SESSION_NAME", "nabla-bot")
 
 def obtener_o_crear_sesion() -> str | None:
     try:
@@ -16,7 +16,7 @@ def obtener_o_crear_sesion() -> str | None:
         if isinstance(sesiones, list):
             for s in sesiones:
                 if s.get("name") == SESSION_NAME: return s.get("id")
-        nueva_sesion = crear_sesion(URL, HEADERS)
+        nueva_sesion = crear_sesion(URL, HEADERS, SESSION_NAME)
         return nueva_sesion.get("id") if isinstance(nueva_sesion, dict) else None
     except: return None
 

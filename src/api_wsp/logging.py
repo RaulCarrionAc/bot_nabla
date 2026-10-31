@@ -7,9 +7,9 @@ def listar_sesiones(url:str, headers:dict)->list:
     r = requests.get(f"{url}/api/sessions", headers = headers)
     return r.json()
 
-def crear_sesion(url:str, headers:dict):
+def crear_sesion(url:str, headers:dict, nombre: str = "nabla-bot"):
     """Crear sesion en api wsp"""
-    payload = {"name": "nabla-bot"}
+    payload = {"name": nombre}
     try:
         r = requests.post(f"{url}/api/sessions", json=payload, headers=headers)
         if r.status_code in (200, 201):

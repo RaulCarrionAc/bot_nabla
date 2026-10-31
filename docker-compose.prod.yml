@@ -1,6 +1,6 @@
 services:
   openwa-api:
-    image: ghcr.io/rmyndharis/openwa:0.25.0
+    image: docker.io/rmyndharis/openwa:0.26.0
     container_name: openwa-api
     stop_grace_period: 75s
     mem_limit: 700m

@@ -118,7 +118,7 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml up --build -d
 
 > ⚠️ **Importante**: La base de datos se almacena en el volumen local `./data` para evitar pérdidas de información al reiniciar o recrear los contenedores.
 
-OpenWA está fijado a `ghcr.io/rmyndharis/openwa:0.25.0` (antes `0.8.19`). La API usa su propia imagen; `Dockerfile.bot_prod` construye el bot Python. Usa siempre `--env-file .env.prod`: el `env_file` de cada servicio no proporciona las variables que Compose interpola en el YAML.
+OpenWA está fijado a `docker.io/rmyndharis/openwa:0.26.0` (antes `0.8.19`). La API usa su propia imagen; `Dockerfile.bot_prod` construye el bot Python. Usa siempre `--env-file .env.prod`: el `env_file` de cada servicio no proporciona las variables que Compose interpola en el YAML.
 
 Antes de actualizar, detén los servicios y respalda `./data`, incluidas la base SQLite y las sesiones de OpenWA. Si necesitas volver a `0.8.19`, restaura también ese respaldo con los servicios detenidos; una base actualizada puede no ser compatible con la versión anterior.
 

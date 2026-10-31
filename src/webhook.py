@@ -5,6 +5,7 @@ import base64
 import os
 import requests as http_requests
 from dotenv import load_dotenv
+from api_wsp.identidad import identificadores_remitente
 from database import (
     init_db, obtener_estado, guardar_estado, eliminar_estado, DATABASE_URL,
     es_usuario_permitido, agregar_usuario_permitido, quitar_usuario_permitido, listar_usuarios_permitidos
@@ -100,6 +101,7 @@ def download_archivo(filename: str):
 
 OPENWA_URL = os.getenv("URL", "http://openwa-api:2785")
 OPENWA_KEY = os.getenv("API-KEY")
+OPENWA_SESSION_NAME = os.getenv("OPENWA_SESSION_NAME", "nabla-bot")
 
 def obtener_session_id_activo() -> str:
     """Consulta a la API de OpenWA para obtener el ID de la sesión 'nabla-bot' activa."""
@@ -113,13 +115,13 @@ def obtener_session_id_activo() -> str:
             sesiones = r.json()
             if isinstance(sesiones, list) and sesiones:
                 for s in sesiones:
-                    if s.get("name") == "nabla-bot" and s.get("status") in ("ready", "WORKING", "STARTING", "authenticated"):
-                        return s.get("id") or s.get("name") or "nabla-bot"
+                    if s.get("name") == OPENWA_SESSION_NAME and s.get("status") in ("ready", "WORKING", "STARTING", "authenticated"):
+                        return s.get("id") or s.get("name") or OPENWA_SESSION_NAME
                 # Si hay alguna sesión activa
-                return sesiones[0].get("id") or sesiones[0].get("name") or "nabla-bot"
+                return OPENWA_SESSION_NAME
     except Exception as e:
         print(f"⚠️ Error al obtener session_id activo: {e}", flush=True)
-    return "nabla-bot"
+    return OPENWA_SESSION_NAME
 
 
 def tarea_actualizar_datos(session_id: str, chat_id: str):
@@ -485,7 +487,7 @@ def enviar_documento(session_id: str, chat_id: str, archivo_bytes: bytes, filena
     mimetype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     b64 = base64.b64encode(archivo_bytes).decode()
     
-    candidate_sessions = list(dict.fromkeys([s for s in [session_id, obtener_session_id_activo(), "nabla-bot"] if s]))
+    candidate_sessions = list(dict.fromkeys([s for s in [session_id, obtener_session_id_activo(), OPENWA_SESSION_NAME] if s]))
     
     # 1. Esquema plano estándar (el mismo que funciona 100% verificado en ICF)
     payload_plano = {
@@ -576,8 +578,9 @@ async def recibir_evento(request: Request, background_tasks: BackgroundTasks):
         chat_id = f"{sender_clean}@c.us"
         
     admins_clean = ["".join(filter(str.isdigit, admin)) for admin in ADMIN_CELLPHONES]
-    es_admin = (sender_clean in admins_clean)
-    es_permitido = es_admin or es_usuario_permitido(sender_clean)
+    identidades = identificadores_remitente(data, sender_clean)
+    es_admin = bool(identidades.intersection(admins_clean))
+    es_permitido = es_admin or any(es_usuario_permitido(identity) for identity in identidades)
 
     # Validar si el mensaje es un comando del bot
     comandos_validos = ("!actualizar", "!puntualidad", "!icf", "!ip", "!permisos", "!reporte_tv", "!reporte_velocidad", "!velocidades")
