@@ -5,6 +5,7 @@ import os
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 import sqlite3
@@ -188,39 +189,20 @@ def guardar_expediciones_en_db(df: pd.DataFrame, operador: str, fecha_inicio: st
     f_ini_str = f_ini_dt.strftime("%Y-%m-%d")
     f_fin_str = f_fin_dt.strftime("%Y-%m-%d")
     
-    # 1. Limpiar registros existentes para este operador y rango de fechas
-    with Session(engine) as session:
-        session.execute(
-            text("DELETE FROM expediciones WHERE operador = :op AND Fecha BETWEEN :ini AND :fin"),
-            {"op": operador, "ini": f_ini_str, "fin": f_fin_str}
-        )
-        session.commit()
-    print(f"🧹 Registros anteriores de '{operador}' entre {f_ini_str} y {f_fin_str} eliminados de la DB.")
-    
     # 2. Mapear filas a objetos Expedicion
     records = []
     is_transidea = (operador in ("lider", "toptur"))
     
     for idx, row in df.iterrows():
         try:
-            fecha_val = str(row.get('Fecha', ''))
-            try:
-                if "-" in fecha_val:
-                    partes = fecha_val.split("-")
-                    if len(partes[0]) == 4:
-                        fecha_db = fecha_val
-                    else:
-                        fecha_db = datetime.strptime(fecha_val, "%d-%m-%Y").strftime("%Y-%m-%d")
-                elif "/" in fecha_val:
-                    partes = fecha_val.split("/")
-                    if len(partes[0]) == 4:
-                        fecha_db = fecha_val
-                    else:
-                        fecha_db = datetime.strptime(fecha_val, "%d/%m/%Y").strftime("%Y-%m-%d")
-                else:
-                    fecha_db = fecha_val
-            except Exception:
-                fecha_db = fecha_val
+            valor = row.get("Fecha")
+            if pd.isna(valor):
+                continue
+            fecha = str(valor).strip().split(" ")[0].split("T")[0].replace("/", "-")
+            formato = "%Y-%m-%d" if len(fecha.split("-")[0]) == 4 else "%d-%m-%Y"
+            fecha_db = datetime.strptime(fecha, formato).date().isoformat()
+            if not f_ini_str <= fecha_db <= f_fin_str:
+                continue
 
             if is_transidea:
                 chofer = limpiar_nan(row.get('Chofer'))
@@ -288,10 +270,15 @@ def guardar_expediciones_en_db(df: pd.DataFrame, operador: str, fecha_inicio: st
         batch_size = 1000
         total_records = len(records)
         with Session(engine) as session:
+            session.execute(
+                text("DELETE FROM expediciones WHERE operador = :op AND Fecha >= :ini AND Fecha < :fin"),
+                {"op": operador, "ini": f_ini_str, "fin": (f_fin_dt + timedelta(days=1)).date().isoformat()},
+            )
             for i in range(0, total_records, batch_size):
                 batch = records[i:i+batch_size]
                 session.add_all(batch)
-                session.commit()
+                session.flush()
+            session.commit()
         print(f"✅ Se importaron {total_records} nuevas expediciones de '{operador}' en SQLite.")
         logging.info(f"[{operador}] OK - Insertados: {total_records}")
         return total_records
@@ -302,18 +289,13 @@ def guardar_expediciones_en_db(df: pd.DataFrame, operador: str, fecha_inicio: st
 
 # --- ORQUESTADOR ---
 
-def procesar_empresa(nombre, config) -> int:
+def procesar_empresa(nombre, config, hoy=None) -> int:
     try:
-        hoy = datetime.now()
-        if nombre == "tasacop":
-            # 1 día de desfase: descargar solo el día anterior (fecha_inicio = fecha_fin = ayer)
-            ayer = hoy - timedelta(days=1)
-            fecha_inicio = ayer.strftime("%d-%m-%Y")
-            fecha_fin = ayer.strftime("%d-%m-%Y")
-        else:
-            # Transidea: 5 días de reconciliación
-            fecha_inicio = (hoy - timedelta(days=5)).strftime("%d-%m-%Y")
-            fecha_fin = hoy.strftime("%d-%m-%Y")
+        hoy = hoy or datetime.now(ZoneInfo("America/Santiago")).date()
+        ayer = hoy - timedelta(days=1)
+        inicio = ayer if nombre == "tasacop" else hoy - timedelta(days=5)
+        fecha_inicio = inicio.strftime("%d-%m-%Y")
+        fecha_fin = ayer.strftime("%d-%m-%Y")
 
         print(f"\n🔄 Iniciando descarga para '{nombre}' ({fecha_inicio} al {fecha_fin})...")
         if config["metodo"] == "requests":
@@ -342,9 +324,10 @@ def descargar_todos() -> dict:
     resumen = {}
     errores = []
     
+    hoy = datetime.now(ZoneInfo("America/Santiago")).date()
     for nombre, config in EMPRESAS.items():
         try:
-            total_insertado = procesar_empresa(nombre, config)
+            total_insertado = procesar_empresa(nombre, config, hoy)
             resumen[nombre] = total_insertado
         except Exception as e:
             resumen[nombre] = 0
